@@ -228,3 +228,12 @@ notebooks/03_compliance_officer_demo.ipynb
    IDs. Full identifiers belong in the Stage 04 SAR document.
 5. **Low-risk inputs are not refused by the agent;** the Stage 04 human gate decides whether a
    narrative is needed.
+
+## 8. Findings during implementation
+
+- **Step 3.6, live run (2026-11-16):** with `tool_choice="required"`, `gpt-4o-mini` returned tool calls
+  with **empty message text**, so no `Thought:` was captured despite the prompt. Fix considered: a
+  required `thought` argument on every tool. **Deferred by developer decision**; the trace records
+  actions + observations only for now. Revisit before Stage 08 or if examiners need the reasoning.
+- The model repeated an unchanged `check_narrative` call once (wasted step). Candidate `V2` prompt rule.
+- Token use is dominated by re-sent input (~28k in vs ~1k out over 6 steps). Relevant to Stage 04 cost metrics.
