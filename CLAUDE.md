@@ -26,11 +26,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-Greenfield (as of 2026-11-16): `main` has no commits and there is no source code yet. The repo holds only
-`project_goal.md`, `project_system_arch.png`, `project_data/*.csv`, an empty `plan/`, `.gitignore`,
+Greenfield (as of 2026-11-16): `main` has only the initial setup commit and there is no source code
+yet — just `project_goal.md`, `project_system_arch.png`, `project_data/*.csv`, `plan/`, `.gitignore`,
 and `.env`. `.env` holds a real API key and is git-ignored; keep it that way (commit `.env.example`
 instead). Audit logs (`*.jsonl`, `logs/`) and `outputs/` are also ignored.
-Next step: master plan in `plan/00-master/`.
+Master plan: `plan/00-master/plan.md`.
 
 ## Commands
 
@@ -51,7 +51,8 @@ streamlit run <app>.py                       # Phase 5 UI (entry point TBD)
 ```
 
 `.env` keys: `OPENAI_API_KEY`, `OPENAI_BASE_URL` (OpenAI-compatible endpoint — pass it to the client,
-don't assume api.openai.com), `MODEL`, `PROMPT_VERSION` (record it in audit logs), and
+don't assume api.openai.com), `MODEL` (agents), `JUDGE_MODEL` (Phase 8 LLM-as-judge; must differ
+from `MODEL`; not in `.env` yet), `PROMPT_VERSION` (record it in audit logs), and
 `GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `REGION`, `GIT_REPO` for Phase 7 Cloud Run deployment.
 
 ## Architecture
@@ -72,14 +73,16 @@ project_data/*.csv → DataLoader → CaseData
   token/cost usage.
 - `ExplainabilityLogger` writes JSONL and receives events from both agents **and** both gate
   decisions (approvals and rejections) — the audit trail is a regulatory deliverable.
+- Workflow logic lives in `src/sar_workflow.py` (shared by the notebook, Streamlit UI and tests);
+  `notebooks/03_workflow_integration.ipynb` only demonstrates it.
 - Planned module locations: `src/foundation_sar.py` (all Pydantic schemas + `DataLoader` +
   `ExplainabilityLogger`), `src/risk_analyst_agent.py`, `src/compliance_officer_agent.py`,
   `notebooks/03_workflow_integration.ipynb`, `tests/test_foundation.py`, `tests/test_risk_analyst.py`,
   `tests/test_compliance_officer.py`.
 - Output contracts: risk classification ∈ {Structuring, Sanctions, Fraud, Money_Laundering, Other},
-  confidence 0.0–1.0, risk level ∈ {Low, Medium, High, Critical}. SAR narrative ≤120 words (the
-  project limit overrides the generic 100–200 guidance), must answer who/what/when/where/why, and cite
-  BSA/AML regulations.
+  confidence 0.0–1.0, risk level ∈ {Low, Medium, High, Critical}. SAR narrative must be **fewer than
+  120 words** (`word_count < 120`; overrides the generic 100–200 guidance), must answer
+  who/what/when/where/why, and cite BSA/AML regulations.
 
 ### Data (`project_data/`, not `data/` as `project_goal.md` says)
 
