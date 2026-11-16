@@ -1,0 +1,25 @@
+# Phase 1 – Step 1.1: central config for ruff (lint) and pytest (tests)
+
+[project]
+name = "trace-sar"
+version = "0.1.0"
+description = "AI-powered Suspicious Activity Report (SAR) processing system"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "notebooks"]
+
+[tool.ruff.lint]
+# E = pycodestyle errors, F = pyflakes, I = import sorting, B = bugbear, UP = pyupgrade
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Real-LLM tests cost money: skipped unless you run `pytest -m llm`.
+addopts = "-m 'not llm'"
+markers = [
+    "llm: test calls the real LLM API (opt-in with `pytest -m llm`)",
+]

@@ -34,8 +34,9 @@ Master plan: `plan/00-master/plan.md`.
 
 ## Commands
 
-Planned toolchain — `requirements-dev.txt`, `.env.example`, and ruff/pytest config do not exist yet and
-are created during Phase 1. Python 3.11 in a local `.venv`, run from the repo root. Shell lines are for
+Python 3.11 in a local `.venv`, run from the repo root. Ruff and pytest are configured in
+`pyproject.toml` (pytest sets `pythonpath=["."]`, so tests import `src.<module>`); settings are read
+from `.env` via `src/config.py`. Shell lines are for
 Git Bash; in PowerShell 5.1 replace `&&` with `;` and activate with `.venv\Scripts\Activate.ps1`.
 
 ```bash
