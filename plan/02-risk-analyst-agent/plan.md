@@ -1,6 +1,6 @@
 # Stage 02 – Risk Analyst Agent (Chain-of-Thought)
 
-- **Status:** APPROVED – ready to implement (Step 2.1 next)
+- **Status:** IMPLEMENTED – Steps 2.1–2.8 done, awaiting PR
 - **Branch:** `feature/risk-analyst-agent`
 - **Master plan:** [`plan/00-master/plan.md`](../00-master/plan.md)
 - **Depends on:** Stage 01 (foundation: `CaseData`, `RiskAnalystOutput`, `ExplainabilityLogger`, test fixtures; merged in PR #3)
