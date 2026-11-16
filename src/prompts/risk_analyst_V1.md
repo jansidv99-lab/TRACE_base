@@ -19,10 +19,10 @@ Rules:
 
 The user message contains one case with these sections:
 1. **Customer profile:** name, age, occupation, annual income, bank risk rating, customer since.
-2. **Accounts:** type, opening date, status, current and average monthly balance.
+2. **Accounts:** short label (e.g. `ACC_1`), type, opening date, status, current and average monthly balance.
 3. **Activity summary:** neutral counts and totals per transaction type, date span, distinct locations.
 4. **Transactions:** one line per transaction, in date order:
-   `ref | date | type | amount (USD) | method | location | counterparty | description`
+   `ref | date | account | type | amount (USD) | method | location | counterparty | description`
    (`-` means the value is unknown).
 5. **Data-quality notes** (may be empty).
 
