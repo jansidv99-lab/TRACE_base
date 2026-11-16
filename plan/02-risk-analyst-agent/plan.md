@@ -183,3 +183,12 @@ notebooks/02_risk_analyst_demo.ipynb
 3. **Final failure** raises `RiskAnalysisError`; Stage 04 routes such cases to manual review.
 4. **Transaction descriptions** are kept as realistic bank text; only the ID prefixes are masked.
 5. **Prompt** lives in the versioned file `src/prompts/risk_analyst_V1.md`, selected by `PROMPT_VERSION`.
+6. **Reproducibility (added during Step 2.7, 2026-11-16):** at `temperature=0` the same case
+   (`CUST_0137`) was classified Structuring in 4 of 5 runs and Money_Laundering in 1. The agent now
+   sends a fixed `seed` (`DEFAULT_SEED = 42`) and logs `seed` + the response's `system_fingerprint`.
+   Afterwards it gave 5 of 5 identical results on fingerprint `fp_b411a220b7`. This is best effort, not
+   a guarantee; Stage 08 measures consistency across many runs. The live structuring test stays
+   strict on classification. If it still flakes, fall back to a majority-of-3 vote in that test.
+7. **Live-test thresholds vs plan:** the model rates the planted structuring case **Medium** (not
+   High), so the live test asserts `risk_level != "Low"`. Whether 3 consecutive near-$10k
+   deposits should be High is a prompt-calibration question for a later `V2`, measured with Stage 08 evals.

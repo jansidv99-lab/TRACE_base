@@ -44,6 +44,9 @@ NO_ACTIVITY_RESULT = RiskAnalystOutput(
     key_indicators=["No account activity in the review period"],
 )
 
+# Phase 2 – Step 2.7: fixed sampling seed — makes repeated runs far more consistent (best effort)
+DEFAULT_SEED = 42
+
 # Phase 2 – Step 2.5: ```json ... ``` (or plain ```) fences some models wrap around JSON
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
@@ -74,6 +77,9 @@ class AnalysisRun:
     latency_ms: float = 0.0
     attempts: int = 0  # API calls made, including retries and repairs
     repairs: int = 0  # Phase 2 – Step 2.5: how many repair prompts were needed
+    # Phase 2 – Step 2.7: backend config that served the request; with `seed`, same fingerprint
+    # + same input should give the same answer (best effort, not guaranteed)
+    system_fingerprint: str | None = None
     error: str | None = None  # Phase 2 – Step 2.5: set when the analysis failed
 
 
@@ -123,6 +129,7 @@ class RiskAnalystAgent:
         model: str | None = None,
         prompt_version: str | None = None,
         temperature: float = 0.0,
+        seed: int | None = DEFAULT_SEED,
         max_api_attempts: int = 3,
         max_repairs: int = 1,
         backoff_seconds: float = 1.0,
@@ -133,6 +140,7 @@ class RiskAnalystAgent:
         self.model = model or config.MODEL
         self.prompt_version = prompt_version or config.PROMPT_VERSION
         self.temperature = temperature
+        self.seed = seed  # Phase 2 – Step 2.7
         self.max_api_attempts = max_api_attempts
         self.max_repairs = max_repairs
         self.backoff_seconds = backoff_seconds
@@ -184,6 +192,8 @@ class RiskAnalystAgent:
             requested_model=self.model if run.method == "llm" else None,
             model=run.model,
             temperature=self.temperature if run.method == "llm" else None,
+            seed=self.seed if run.method == "llm" else None,
+            system_fingerprint=run.system_fingerprint,
             token_usage=run.token_usage,
             attempts=run.attempts,
             repairs=run.repairs,
@@ -239,6 +249,7 @@ class RiskAnalystAgent:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     temperature=self.temperature,
+                    seed=self.seed,
                     response_format={"type": "json_object"},
                     messages=messages,
                 )
@@ -249,6 +260,9 @@ class RiskAnalystAgent:
                 self.sleep(self.backoff_seconds * 2**attempt)  # 1s, 2s, 4s, ...
                 continue
             run.model = getattr(response, "model", None) or run.model
+            run.system_fingerprint = getattr(response, "system_fingerprint", None) or (
+                run.system_fingerprint
+            )
             _add_usage(run.token_usage, response)
             choices = getattr(response, "choices", None) or []
             return (choices[0].message.content or "") if choices else ""
