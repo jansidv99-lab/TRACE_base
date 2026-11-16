@@ -1,6 +1,6 @@
 # Stage 01 – Foundation & Data Modeling
 
-- **Status:** APPROVED – implementation in progress (Step 1.1)
+- **Status:** IMPLEMENTED – Steps 1.1–1.8 done, awaiting PR
 - **Branch:** `feature/foundation-schemas`
 - **Master plan:** [`plan/00-master/plan.md`](../00-master/plan.md)
 - **Depends on:** Stage 00 (master plan, merged in PR #1)

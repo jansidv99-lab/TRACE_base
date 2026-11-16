@@ -26,9 +26,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-Greenfield (as of 2026-11-16): `main` has only the initial setup commit and there is no source code
-yet — just `project_goal.md`, `project_system_arch.png`, `project_data/*.csv`, `plan/`, `.gitignore`,
-and `.env`. `.env` holds a real API key and is git-ignored; keep it that way (commit `.env.example`
+As of 2026-11-16: Stage 01 (foundation) is implemented — `src/foundation_sar.py` holds the schemas,
+`ExplainabilityLogger` and `DataLoader`; `tests/conftest.py` has shared sample-record fixtures
+(`customer_row`, `account_row`, `transaction_row`, `sample_case`) for later stages to reuse. Next:
+Stage 02 (Risk Analyst agent). `.env` holds a real API key and is git-ignored; keep it that way (commit `.env.example`
 instead). Audit logs (`*.jsonl`, `logs/`) and `outputs/` are also ignored.
 Master plan: `plan/00-master/plan.md`.
 
