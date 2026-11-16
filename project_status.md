@@ -66,7 +66,7 @@ Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-ag
 | 3.2 Regulatory citation table | ✅ | `src/regulations.py` (10 citations, format-insensitive matching) |
 | 3.3 Narrative validators | ✅ | `src/narrative_checks.py` (length, 5 W's, terminology, internal IDs, dates, amounts, citations) |
 | 3.4 ReACT system prompt | ✅ | `src/prompts/compliance_officer_V1.md` (~1,030 tokens) |
-| 3.5 Tools: schemas + executor | ⏳ | `src/compliance_tools.py` |
+| 3.5 Tools: schemas + executor | ✅ | `src/compliance_tools.py` (4 tools, error observations instead of crashes) |
 | 3.6 ComplianceOfficerAgent ReACT loop | ⏳ | `src/compliance_officer_agent.py` |
 | 3.7 Audit integration | ⏳ | ReACT trace in audit log |
 | 3.8 Tests | ⏳ | `tests/test_compliance_officer.py` |
