@@ -1,0 +1,96 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project goal
+
+@project_goal.md
+
+## Workflow rules
+
+1. **Plan first:** before every step, write a detailed plan doc under `plan/` that explains each topic clearly. Keep plans organized by stage in numbered folders that follow the phases in `project_goal.md`, e.g. `plan/00-master/`, `plan/01-foundation/`, `plan/02-risk-analyst-agent/`. Plans have steps with a clear purpose, output and depends_on.
+   Add new stage folders whenever needed, keeping the numeric prefix and never mixing topics.
+   Each stage's `plan.md` opens with a header: `Status:` (e.g. `DRAFT – awaiting review`), the proposed branch, a link to the master plan, and `Depends on:` earlier phases.
+2. **Review:** ask the user to review each plan doc before implementing it.
+3. **Permission:** always ask for permission before making any change to code.
+4. **Phased implementation:** start with the master plan, then plan the code phase by phase and step by step, stating each step's purpose and dependencies.
+5. **Commits, new branch creation PRs, merges:** always ask for permission before every commit, new branch creation, pull request, and merge.
+6. **Branch naming:** use professional, descriptive names prefixed by type, e.g. `feature/foundation-schemas`, `feature/risk-analyst-agent`, `fix/llm-json-parsing`, `chore/cloudrun-dockerfile`, `docs/master-plan`.
+7. **Phase comments in code:** mark which phase/step produced the code, at the top of each new file and on each new function/class, for future reference:
+   ```python
+   # Phase 2 – Step 3: <purpose of this code>
+   ```
+8. **Learning-oriented:** this project is a hands-on learning exercise. Go step by step, explain new concepts as they come up, and never build everything in one go.
+9. **Sync before new work:** `git switch main && git pull` (Git Bash; in PowerShell 5.1, which has no `&&`: `git switch main; if ($?) { git pull }`) (the repo is configured with `pull.ff=only` and `fetch.prune=true`), confirm `git status` says "up to date with 'origin/main'", then create the new branch from `main`. After a PR is merged: `git switch main && git pull && git branch -d <merged-branch>`.
+10. **GitHub activities:** do not perform any GitHub-related activities (push, opening/merging PRs, remote branch operations); the developer performs them manually. Always provide the exact commands to execute. Local git (switch, branch, pull, commit with permission per rule 5) is fine.
+
+## Current state
+
+Greenfield (as of 2026-11-16): `main` has no commits and there is no source code yet. The repo holds only
+`project_goal.md`, `project_system_arch.png`, `project_data/*.csv`, an empty `plan/`, `.gitignore`,
+and `.env`. `.env` holds a real API key and is git-ignored; keep it that way (commit `.env.example`
+instead). Audit logs (`*.jsonl`, `logs/`) and `outputs/` are also ignored.
+Next step: master plan in `plan/00-master/`.
+
+## Commands
+
+Planned toolchain — `requirements-dev.txt`, `.env.example`, and ruff/pytest config do not exist yet and
+are created during Phase 1. Python 3.11 in a local `.venv`, run from the repo root. Shell lines are for
+Git Bash; in PowerShell 5.1 replace `&&` with `;` and activate with `.venv\Scripts\Activate.ps1`.
+
+```bash
+py -3.11 -m venv .venv && .venv\Scripts\activate
+pip install -r requirements-dev.txt          # runtime deps + pytest + ruff
+copy .env.example .env                       # then fill in values
+
+ruff check .                                 # lint: line length 100, rules E,F,I,B,UP
+pytest                                       # unit tests; `llm`-marked tests are skipped by default
+pytest tests/test_foundation.py::test_name   # single test
+pytest -m llm                                # opt in to tests that call the real LLM
+streamlit run <app>.py                       # Phase 5 UI (entry point TBD)
+```
+
+`.env` keys: `OPENAI_API_KEY`, `OPENAI_BASE_URL` (OpenAI-compatible endpoint — pass it to the client,
+don't assume api.openai.com), `MODEL`, `PROMPT_VERSION` (record it in audit logs), and
+`GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `REGION`, `GIT_REPO` for Phase 7 Cloud Run deployment.
+
+## Architecture
+
+Two-stage, human-gated pipeline (see `project_system_arch.png`):
+
+```
+project_data/*.csv → DataLoader → CaseData
+  → RiskAnalystAgent (Chain-of-Thought) → RiskAnalystOutput
+  → Risk Review Gate (human)  ── rejected ──→ ExplainabilityLogger
+  → ComplianceOfficerAgent (ReACT) → ComplianceOfficerOutput
+  → Compliance Review Gate (human) ── rejected ──→ ExplainabilityLogger
+  → SAR document (JSON)
+```
+
+- The compliance agent only runs on cases a human approved at the risk gate — this is the
+  "cost optimization" the project must demonstrate, so keep the stages separable and track per-stage
+  token/cost usage.
+- `ExplainabilityLogger` writes JSONL and receives events from both agents **and** both gate
+  decisions (approvals and rejections) — the audit trail is a regulatory deliverable.
+- Planned module locations: `src/foundation_sar.py` (all Pydantic schemas + `DataLoader` +
+  `ExplainabilityLogger`), `src/risk_analyst_agent.py`, `src/compliance_officer_agent.py`,
+  `notebooks/03_workflow_integration.ipynb`, `tests/test_foundation.py`, `tests/test_risk_analyst.py`,
+  `tests/test_compliance_officer.py`.
+- Output contracts: risk classification ∈ {Structuring, Sanctions, Fraud, Money_Laundering, Other},
+  confidence 0.0–1.0, risk level ∈ {Low, Medium, High, Critical}. SAR narrative ≤120 words (the
+  project limit overrides the generic 100–200 guidance), must answer who/what/when/where/why, and cite
+  BSA/AML regulations.
+
+### Data (`project_data/`, not `data/` as `project_goal.md` says)
+
+- `customers.csv` (150 rows) ← `accounts.csv.customer_id` (178 rows) ← `transactions.csv.account_id`
+  (4,268 rows). Account IDs are `CUST_####_ACC_n`.
+- A `CaseData` is one customer + their accounts + those accounts' transactions.
+- Expect messy values the schemas must tolerate: most `counterparty` and many `location` values are
+  blank, `transaction_type` and `method` can disagree (e.g. `Online_Transfer` via `ATM`), and
+  `average_monthly_balance` can be `0.0` on accounts with large balances.
+
+## Known issues in `project_goal.md`
+
+The Phase 3 section first repeats the Phase 2 (`risk_analyst_agent.py`) checklist under the wrong
+heading; the real Phase 3 deliverables are under "Phase 3 Deliverables: Compliance Officer Agent".
