@@ -1,0 +1,5 @@
+# Phase 1 – Step 1.1: runtime dependencies (exact pins for reproducibility)
+# openai is added in Stage 02, streamlit in Stage 05 — only when first needed.
+pandas==3.1.1
+pydantic==2.14.3
+python-dotenv==1.2.4
