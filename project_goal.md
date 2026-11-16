@@ -169,6 +169,7 @@
   ### Phase 7 : CI/CD pipelines to GCP
     - github actions for the CI pipeliens
     - cloudrun for the deployment
+    - use the same GCP account , but create seperate resources for this project
 
 
   ### Phase 8 : AI QA Framework 

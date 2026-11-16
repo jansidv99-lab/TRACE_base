@@ -26,10 +26,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-As of 2026-11-16: Stage 01 (foundation) is implemented — `src/foundation_sar.py` holds the schemas,
-`ExplainabilityLogger` and `DataLoader`; `tests/conftest.py` has shared sample-record fixtures
-(`customer_row`, `account_row`, `transaction_row`, `sample_case`) for later stages to reuse. Next:
-Stage 02 (Risk Analyst agent). `.env` holds a real API key and is git-ignored; keep it that way (commit `.env.example`
+As of 2026-11-16: Stages 01–02 are implemented (see `project_status.md`).
+- `src/foundation_sar.py`: schemas, `ExplainabilityLogger`, `DataLoader`.
+- `src/risk_analyst_agent.py` + `src/case_formatter.py` + `src/prompts/risk_analyst_V1.md`: the
+  Chain-of-Thought agent. The formatter masks transaction IDs as `T001…` (the real ID prefixes such as
+  `STRUCT_` leak the answer) and drops PII; the agent uses `temperature=0`, `seed=42`, JSON mode,
+  one repair retry and exponential backoff, and raises `RiskAnalysisError` on final failure.
+- Tests: `tests/conftest.py` (sample-record fixtures) and `tests/fakes.py` (`FakeLLMClient`, openai
+  error builders); reuse both in later stages. Next: Stage 03 (Compliance Officer agent). `.env` holds a real API key and is git-ignored; keep it that way (commit `.env.example`
 instead). Audit logs (`*.jsonl`, `logs/`) and `outputs/` are also ignored.
 Master plan: `plan/00-master/plan.md`.
 
@@ -99,3 +103,6 @@ project_data/*.csv → DataLoader → CaseData
 
 The Phase 3 section first repeats the Phase 2 (`risk_analyst_agent.py`) checklist under the wrong
 heading; the real Phase 3 deliverables are under "Phase 3 Deliverables: Compliance Officer Agent".
+
+## Project status
+@project_status.md list all the phases and realted steps  and provide the status of each step 
