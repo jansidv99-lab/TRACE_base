@@ -9,7 +9,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 00 – Master plan | ✅ | `docs/master-plan` · PR #1 merged |
 | 01 – Foundation & data modeling | ✅ | `feature/foundation-schemas` (PR #2), `feature/foundation-data-exploration` (PR #3) merged |
 | 02 – Risk Analyst agent | ✅ implemented, PR pending | `feature/risk-analyst-agent` |
-| 03 – Compliance Officer agent | ⏳ | – |
+| 03 – Compliance Officer agent | 🔄 in progress | `feature/compliance-officer-agent` |
 | 04 – Workflow integration & human gates | ⏳ | – |
 | 05 – Streamlit UI | ⏳ | – |
 | 06 – Test suite consolidation | ⏳ | – |
@@ -57,15 +57,20 @@ Plan: [`plan/02-risk-analyst-agent/plan.md`](plan/02-risk-analyst-agent/plan.md)
 - One factual slip (wrong date on an amount) seen in Step 2.4 → Stage 08 faithfulness grader.
 - ~8.5 s per case → ~17 min for 119 active cases sequentially → relevant to Stage 04.
 
-## Stage 03 – Compliance Officer agent ⏳
-| Step | Status |
-|---|---|
-| 3.1 ReACT prompt design | ⏳ |
-| 3.2 ComplianceOfficerAgent + generate_compliance_narrative | ⏳ |
-| 3.3 Narrative validation (< 120 words, 5 W's, terminology) | ⏳ |
-| 3.4 Regulatory citations | ⏳ |
-| 3.5 Revise-on-failure loop | ⏳ |
-| 3.6 Audit + tests | ⏳ |
+## Stage 03 – Compliance Officer agent 🔄
+Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-agent/plan.md) — real ReACT loop with function calling (verified via Vocareum)
+
+| Step | Status | Output |
+|---|---|---|
+| 3.1 Shared LLM utilities (refactor) | ✅ | `src/llm_utils.py`, `tests/test_llm_utils.py`; risk agent uses it, no behaviour change |
+| 3.2 Regulatory citation table | ⏳ | `src/regulations.py` |
+| 3.3 Narrative validators | ⏳ | `src/narrative_checks.py` |
+| 3.4 ReACT system prompt | ⏳ | `src/prompts/compliance_officer_V1.md` |
+| 3.5 Tools: schemas + executor | ⏳ | `src/compliance_tools.py` |
+| 3.6 ComplianceOfficerAgent ReACT loop | ⏳ | `src/compliance_officer_agent.py` |
+| 3.7 Audit integration | ⏳ | ReACT trace in audit log |
+| 3.8 Tests | ⏳ | `tests/test_compliance_officer.py` |
+| 3.9 Demo notebook | ⏳ | `notebooks/03_compliance_officer_demo.ipynb` |
 
 ## Stage 04 – Workflow integration & human gates ⏳
 | Step | Status |
