@@ -348,6 +348,8 @@ class ExplainabilityLogger:
         execution_time_ms: float,
         success: bool = True,
         error_message: str | None = None,
+        # Phase 2 – Step 2.6: the prompt version actually used (agents may override the default)
+        prompt_version: str | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
         if agent_type not in get_args(AgentType):
@@ -368,7 +370,7 @@ class ExplainabilityLogger:
             "execution_time_ms": round(float(execution_time_ms), 2),
             "success": success,
             "error_message": error_message,
-            "prompt_version": config.PROMPT_VERSION,
+            "prompt_version": prompt_version or config.PROMPT_VERSION,
             # Optional from Stage 02 on: model, token_usage, ...
             **redact_pii(extra),
         }

@@ -12,7 +12,8 @@ Error handling (Step 2.5):
 - permanent API errors (bad key, bad request, other 4xx)      → fail immediately
 - output that is not valid JSON / fails validation            → one "repair" retry with the errors
 - anything still failing                                      → RiskAnalysisError
-Step 2.6 adds audit logging.
+
+Audit (Step 2.6): every analyze_case call writes exactly one ExplainabilityLogger event.
 """
 
 import json
@@ -141,9 +142,56 @@ class RiskAnalystAgent:
         if not self.model:
             raise ValueError("No model configured: set MODEL in .env or pass model=...")
 
+    # Phase 2 – Step 2.6: public entry point — analyse one case and ALWAYS write an audit event
+    def analyze_case(self, case: CaseData) -> RiskAnalystOutput:
+        """Return a validated RiskAnalystOutput, or raise RiskAnalysisError.
+
+        Exactly one audit event is written per call: success, rule-based or failure.
+        """
+        try:
+            result = self._analyze(case)
+        except RiskAnalysisError as exc:
+            self._log(case, result=None, error=exc.reason)
+            raise
+        self._log(case, result=result, error=None)
+        return result
+
+    # Phase 2 – Step 2.6: one audit record with everything an examiner needs to replay the decision
+    def _log(self, case: CaseData, result: RiskAnalystOutput | None, error: str | None) -> None:
+        run = self.last_run or AnalysisRun(case_id=case.case_id, method="llm")
+        txns = case.transactions
+        self.logger.log_agent_action(
+            agent_type="RiskAnalyst",
+            action="analyze_case",
+            case_id=case.case_id,
+            # A summary, not the full prompt: the prompt is reproducible from case + prompt_version
+            input_data={
+                "customer_id": case.customer.customer_id,
+                "accounts": len(case.accounts),
+                "transactions": len(txns),
+                "period": [str(txns[0].transaction_date), str(txns[-1].transaction_date)]
+                if txns
+                else None,
+                "data_quality_flags": len(case.data_quality_flags),
+            },
+            output_data=result,
+            reasoning=result.reasoning if result else f"Analysis failed: {error}",
+            execution_time_ms=run.latency_ms,
+            success=error is None,
+            error_message=error,
+            prompt_version=self.prompt_version,
+            method=run.method,
+            requested_model=self.model if run.method == "llm" else None,
+            model=run.model,
+            temperature=self.temperature if run.method == "llm" else None,
+            token_usage=run.token_usage,
+            attempts=run.attempts,
+            repairs=run.repairs,
+        )
+
     # Phase 2 – Step 2.4: analyse one case and return a validated, unmasked result
     # Phase 2 – Step 2.5: with repair retries; raises RiskAnalysisError on final failure
-    def analyze_case(self, case: CaseData) -> RiskAnalystOutput:
+    def _analyze(self, case: CaseData) -> RiskAnalystOutput:
         if not case.transactions:
             self.last_run = AnalysisRun(case_id=case.case_id, method="rule_based")
             return NO_ACTIVITY_RESULT
