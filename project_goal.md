@@ -115,7 +115,7 @@
   4. Create efficiency metrics and cost optimization
 
   **Deliverable:** End-to-end SAR processing system with audit trails  
-  **Workflow Implementation (`notebooks/03_workflow_integration.ipynb`):**
+  **Workflow Implementation :**
   - [ ] **Two-Stage Processing**: Risk analysis → Human review → Compliance generation
   - [ ] **Human Decision Gates**: Interactive approval/rejection points
   - [ ] **SAR Document Generation**: Complete regulatory forms with all required fields
@@ -175,5 +175,5 @@
   Where each AI QA layer lives
     | Layer | Where |
     | A – Deterministic testing (minimal) | Tests in **every** phase, run by **CI**. Harness code gets unit tests with fakes. |
-    | B – Probabilistic evals (**main**) | Graders from Phase 4 → harness  → slices→ feedback loop 
-    | C – System metrics & drift (**main**) | Run log from Phase 6 → logging/BigQuery →  dashboard → alerts |
+    | B – Probabilistic evals (**main**) | Graders → harness  → slices→ feedback loop 
+    | C – System metrics & drift (**main**) | Run log → logging/BigQuery →  dashboard → alerts |
