@@ -8,8 +8,12 @@ ExplainabilityLogger (1.6) and DataLoader (1.7).
 Every rule below traces back to a finding in notebooks/01_data_exploration.ipynb.
 """
 
-from datetime import date, datetime
-from typing import Annotated, Literal
+import json
+import threading
+import uuid
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import (
     BaseModel,
@@ -19,6 +23,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from src import config
 
 # ---------------------------------------------------------------------------
 # Phase 1 – Step 1.3: allowed values (Literal types) observed in the data
@@ -272,3 +278,96 @@ class ComplianceOfficerOutput(BaseModel):
                 f"narrative has {words} words; it must be fewer than {NARRATIVE_WORD_LIMIT}"
             )
         return value
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 – Step 1.6: audit logging
+# ---------------------------------------------------------------------------
+AgentType = Literal["DataLoader", "RiskAnalyst", "ComplianceOfficer", "Human"]
+
+# Phase 1 – Step 1.6: personal data that must never reach the audit log (master plan rule 6)
+PII_FIELDS = frozenset({"ssn_last_4", "date_of_birth", "address", "phone"})
+REDACTED = "[REDACTED]"
+
+# Phase 1 – Step 1.6: keys every audit record has; **extra may not overwrite them
+_CORE_FIELDS = frozenset(
+    {
+        "timestamp", "event_id", "case_id", "agent_type", "action", "input_summary", "output",
+        "reasoning", "execution_time_ms", "success", "error_message", "prompt_version",
+    }
+)
+
+
+# Phase 1 – Step 1.6: turn models/dates into plain JSON data and mask PII keys at any depth
+def redact_pii(value: Any) -> Any:
+    """Return a JSON-friendly copy of `value` with PII_FIELDS replaced by "[REDACTED]"."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {
+            k: (REDACTED if k in PII_FIELDS else redact_pii(v)) for k, v in value.items()
+        }
+    if isinstance(value, list | tuple | set):
+        return [redact_pii(v) for v in value]
+    if isinstance(value, date):  # also covers datetime (a subclass of date)
+        return value.isoformat()
+    if isinstance(value, Path):  # forward slashes on every OS, so logs look the same everywhere
+        return value.as_posix()
+    return value
+
+
+# Phase 1 – Step 1.6: append-only JSONL audit trail for regulators
+class ExplainabilityLogger:
+    """Writes one JSON object per line for every agent action and human decision.
+
+    Append-only by design: existing lines are never rewritten, which is what makes the file
+    trustworthy as an audit trail. A lock keeps lines whole if several threads log at once
+    (e.g. Streamlit reruns in Stage 05).
+    """
+
+    # Phase 1 – Step 1.6: choose the log file (default logs/sar_audit.jsonl) and create its folder
+    def __init__(self, log_file: str | Path | None = None) -> None:
+        self.log_file = Path(log_file) if log_file else config.LOG_DIR / "sar_audit.jsonl"
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+
+    # Phase 1 – Step 1.6: record one event; returns the record that was written
+    def log_agent_action(
+        self,
+        agent_type: AgentType,
+        action: str,
+        case_id: str | None,
+        input_data: Any,
+        output_data: Any,
+        reasoning: str,
+        execution_time_ms: float,
+        success: bool = True,
+        error_message: str | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        if agent_type not in get_args(AgentType):
+            raise ValueError(f"agent_type must be one of {get_args(AgentType)}, got {agent_type!r}")
+        clashes = _CORE_FIELDS & extra.keys()
+        if clashes:
+            raise ValueError(f"extra fields may not overwrite core fields: {sorted(clashes)}")
+
+        record: dict[str, Any] = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event_id": str(uuid.uuid4()),
+            "case_id": case_id,
+            "agent_type": agent_type,
+            "action": action,
+            "input_summary": redact_pii(input_data),
+            "output": redact_pii(output_data),
+            "reasoning": reasoning,
+            "execution_time_ms": round(float(execution_time_ms), 2),
+            "success": success,
+            "error_message": error_message,
+            "prompt_version": config.PROMPT_VERSION,
+            # Optional from Stage 02 on: model, token_usage, ...
+            **redact_pii(extra),
+        }
+        line = json.dumps(record, ensure_ascii=False)
+        with self._lock, self.log_file.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return record
