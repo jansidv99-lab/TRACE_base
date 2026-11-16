@@ -10,16 +10,21 @@ Every rule below traces back to a finding in notebooks/01_data_exploration.ipynb
 
 import json
 import threading
+import time
 import uuid
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
+import pandas as pd
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -371,3 +376,175 @@ class ExplainabilityLogger:
         with self._lock, self.log_file.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
         return record
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 – Step 1.7: loading CSVs into validated cases
+# ---------------------------------------------------------------------------
+
+
+# Phase 1 – Step 1.7: one problem found while loading, precise enough to fix the source data
+@dataclass(frozen=True)
+class LoadError:
+    file: str  # e.g. "accounts.csv"
+    row_number: int | None  # line number in the CSV (header = line 1); None for grouping errors
+    record_id: str | None  # e.g. the account_id of the bad row
+    message: str
+
+
+# Phase 1 – Step 1.7: CSV → validated records → one CaseData per customer
+class DataLoader:
+    """Reads customers/accounts/transactions CSVs and builds validated CaseData objects.
+
+    Bad rows never crash the load: they are collected in `self.errors` as LoadError entries
+    and summarised in the audit log. Data-quality quirks become `data_quality_flags`.
+    """
+
+    # Phase 1 – Step 1.7: where the CSVs live and where audit events go
+    def __init__(self, logger: ExplainabilityLogger, data_dir: str | Path | None = None) -> None:
+        self.logger = logger
+        self.data_dir = Path(data_dir) if data_dir else config.DATA_DIR
+        self.errors: list[LoadError] = []
+
+    # Phase 1 – Step 1.7: read a CSV as plain strings so Pydantic does all the typing
+    def _read_csv(self, file_name: str) -> list[dict[str, str]]:
+        df = pd.read_csv(self.data_dir / file_name, dtype=str, keep_default_na=False)
+        return df.to_dict(orient="records")
+
+    # Phase 1 – Step 1.7: validate every row; keep good ones, record bad ones with line numbers
+    def _load(self, file_name: str, model: type[BaseModel], id_field: str) -> tuple[list, list]:
+        valid, errors = [], []
+        for index, row in enumerate(self._read_csv(file_name)):
+            try:
+                valid.append(model(**row))
+            except ValidationError as exc:
+                problems = "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc']) or 'row'}: {e['msg']}"
+                    for e in exc.errors()
+                )
+                errors.append(LoadError(file_name, index + 2, row.get(id_field) or None, problems))
+        self.errors.extend(errors)
+        return valid, errors
+
+    # Phase 1 – Step 1.7: customers.csv → CustomerData
+    def load_customers(self) -> tuple[list[CustomerData], list[LoadError]]:
+        return self._load("customers.csv", CustomerData, "customer_id")
+
+    # Phase 1 – Step 1.7: accounts.csv → AccountData
+    def load_accounts(self) -> tuple[list[AccountData], list[LoadError]]:
+        return self._load("accounts.csv", AccountData, "account_id")
+
+    # Phase 1 – Step 1.7: transactions.csv → TransactionData
+    def load_transactions(self) -> tuple[list[TransactionData], list[LoadError]]:
+        return self._load("transactions.csv", TransactionData, "transaction_id")
+
+    # Phase 1 – Step 1.7: quirks we record but do not reject (Stage 01 review decision 2)
+    @staticmethod
+    def find_data_quality_flags(
+        accounts: list[AccountData], transactions: list[TransactionData]
+    ) -> list[str]:
+        """Flags transactions dated before their account opened.
+
+        transaction_type/method disagreements are NOT flagged: in this dataset the method is
+        spread almost uniformly across types (synthetic noise), so the flag would fire on
+        thousands of rows and drown out the useful ones.
+        """
+        opened = {a.account_id: a.opening_date for a in accounts}
+        return [
+            f"{t.transaction_id} dated {t.transaction_date} before account {t.account_id} "
+            f"opened {opened[t.account_id]}"
+            for t in transactions
+            if t.account_id in opened and t.transaction_date < opened[t.account_id]
+        ]
+
+    # Phase 1 – Step 1.7: assemble one validated case (case_id = customer + UTC time)
+    def create_case_from_data(
+        self,
+        customer: CustomerData,
+        accounts: list[AccountData],
+        transactions: list[TransactionData],
+        created_at: datetime | None = None,
+    ) -> CaseData:
+        created_at = created_at or datetime.now(UTC)
+        return CaseData(
+            case_id=f"CASE_{customer.customer_id}_{created_at:%Y%m%d%H%M%S}",
+            customer=customer,
+            accounts=accounts,
+            transactions=sorted(transactions, key=lambda t: (t.transaction_date, t.transaction_id)),
+            case_created_at=created_at,
+            data_quality_flags=self.find_data_quality_flags(accounts, transactions),
+        )
+
+    # Phase 1 – Step 1.7: load all three files and build one case per customer
+    def build_all_cases(self) -> list[CaseData]:
+        start = time.perf_counter()
+        self.errors = []
+        customers, _ = self.load_customers()
+        accounts, _ = self.load_accounts()
+        transactions, _ = self.load_transactions()
+
+        # Group accounts under valid customers; anything left over is an orphan
+        customer_ids = {c.customer_id for c in customers}
+        accounts_by_customer: dict[str, list[AccountData]] = defaultdict(list)
+        for a in accounts:
+            if a.customer_id in customer_ids:
+                accounts_by_customer[a.customer_id].append(a)
+            else:
+                self.errors.append(
+                    LoadError("accounts.csv", None, a.account_id,
+                              f"customer {a.customer_id} not found or invalid")
+                )
+
+        # Group transactions under the customer who owns the account
+        owner_of = {a.account_id: a.customer_id for a in accounts if a.customer_id in customer_ids}
+        txns_by_customer: dict[str, list[TransactionData]] = defaultdict(list)
+        for t in transactions:
+            owner = owner_of.get(t.account_id)
+            if owner:
+                txns_by_customer[owner].append(t)
+            else:
+                self.errors.append(
+                    LoadError("transactions.csv", None, t.transaction_id,
+                              f"account {t.account_id} not found or invalid")
+                )
+
+        created_at = datetime.now(UTC)  # one timestamp for the whole batch
+        cases: list[CaseData] = []
+        for c in customers:
+            if not accounts_by_customer[c.customer_id]:
+                self.errors.append(
+                    LoadError("customers.csv", None, c.customer_id,
+                              "customer has no valid accounts; case not built")
+                )
+                continue
+            try:
+                cases.append(
+                    self.create_case_from_data(
+                        c, accounts_by_customer[c.customer_id], txns_by_customer[c.customer_id],
+                        created_at,
+                    )
+                )
+            except ValidationError as exc:
+                self.errors.append(LoadError("customers.csv", None, c.customer_id, str(exc)))
+
+        summary = {
+            "customers_valid": len(customers),
+            "accounts_valid": len(accounts),
+            "transactions_valid": len(transactions),
+            "cases_built": len(cases),
+            "errors": len(self.errors),
+            "cases_with_quality_flags": sum(1 for k in cases if k.data_quality_flags),
+            "quality_flags_total": sum(len(k.data_quality_flags) for k in cases),
+        }
+        self.logger.log_agent_action(
+            agent_type="DataLoader",
+            action="build_all_cases",
+            case_id=None,
+            input_data={"data_dir": self.data_dir},
+            output_data={**summary, "first_errors": [e.__dict__ for e in self.errors[:10]]},
+            reasoning="Validated CSV rows with Pydantic; grouped them into one case per customer.",
+            execution_time_ms=(time.perf_counter() - start) * 1000,
+            success=not self.errors,
+            error_message=f"{len(self.errors)} load errors" if self.errors else None,
+        )
+        return cases
