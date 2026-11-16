@@ -9,9 +9,16 @@ Every rule below traces back to a finding in notebooks/01_data_exploration.ipynb
 """
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 # ---------------------------------------------------------------------------
 # Phase 1 – Step 1.3: allowed values (Literal types) observed in the data
@@ -41,6 +48,14 @@ ACCOUNT_ID_PATTERN = r"^CUST_\d{4}_ACC_\d+$"
 TRANSACTION_ID_PATTERN = r"^[A-Z]+_[0-9A-F]{8}$"
 # Phase 1 – Step 1.4: e.g. CASE_CUST_0001_20261116143005 (customer + UTC creation time)
 CASE_ID_PATTERN = r"^CASE_CUST_\d{4}_\d{14}$"
+
+# Phase 1 – Step 1.5: allowed values for the agents' outputs (project_goal.md, Phase 2)
+SuspiciousActivityType = Literal["Structuring", "Sanctions", "Fraud", "Money_Laundering", "Other"]
+RiskLevel = Literal["Low", "Medium", "High", "Critical"]
+# Phase 1 – Step 1.5: a string that is not empty after trimming spaces
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+# Phase 1 – Step 1.5: SAR narrative must be FEWER than this many words (master plan decision 2)
+NARRATIVE_WORD_LIMIT = 120
 
 
 # Phase 1 – Step 1.3: shared validation rule — dates in the data can never be in the future
@@ -207,3 +222,53 @@ class CaseData(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate transaction_id in case")
         return self
+
+
+# Phase 1 – Step 1.5: count words the same way everywhere (schema, Stage 03 validator, evals)
+def count_words(text: str) -> int:
+    """Number of whitespace-separated words, e.g. "31 U.S.C. 5324" counts as 3."""
+    return len(text.split())
+
+
+# Phase 1 – Step 1.5: contract the Risk Analyst agent (Stage 02) must fill
+class RiskAnalystOutput(BaseModel):
+    """Structured result of the Chain-of-Thought risk analysis for one case.
+
+    Unlike the CSV record models, unknown extra keys are *ignored* rather than rejected:
+    LLMs sometimes add harmless fields, and that should not fail an otherwise valid answer.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    classification: SuspiciousActivityType
+    confidence_score: float = Field(ge=0.0, le=1.0)
+    risk_level: RiskLevel
+    reasoning: NonEmptyStr
+    key_indicators: list[NonEmptyStr] = Field(min_length=1)
+
+
+# Phase 1 – Step 1.5: contract the Compliance Officer agent (Stage 03) must fill
+class ComplianceOfficerOutput(BaseModel):
+    """Structured result of the ReACT narrative generation for one case.
+
+    The schema enforces the hard word limit; the behavioural checks (who/what/when/where/why,
+    terminology, citation correctness) live in Stage 03 because they need case context.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    narrative: NonEmptyStr
+    narrative_reasoning: NonEmptyStr
+    regulatory_citations: list[NonEmptyStr] = Field(min_length=1)
+    completeness_check: bool
+
+    # Phase 1 – Step 1.5: hard limit — the narrative must be fewer than 120 words
+    @field_validator("narrative")
+    @classmethod
+    def _under_word_limit(cls, value: str) -> str:
+        words = count_words(value)
+        if words >= NARRATIVE_WORD_LIMIT:
+            raise ValueError(
+                f"narrative has {words} words; it must be fewer than {NARRATIVE_WORD_LIMIT}"
+            )
+        return value
