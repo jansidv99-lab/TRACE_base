@@ -10,6 +10,11 @@
 Run the blocks in order. Each block ends with a **check** command and its expected result. If a
 check fails, stop there and paste the output into the chat.
 
+Every block starts with a **guard line** (`: "${VAR:?…}"`). In a new Git Bash window without the
+block 0 variables it stops immediately with *run block 0 first*, instead of running commands with
+empty names. (Added after the first deploy: block 4 had silently granted nothing, so Cloud Run got
+*Permission denied on secret*.)
+
 ```
 GitHub Actions (CD) ──OIDC token──► WIF pool trace-sar-github ──► impersonates trace-sar-deployer
         │                                                              │ pushes image / deploys
@@ -52,6 +57,7 @@ number should equal `GCP_PROJECT_NUMBER` in `.env`.
 ## 1. Enable the APIs
 
 ```bash
+: "${PROJECT_ID:?run block 0 first}" "${PROJECT_NUMBER:?run block 0 first}"
 gcloud services enable \
   run.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com \
   iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com \
@@ -66,6 +72,7 @@ gcloud services enable \
 ## 2. Artifact Registry repository (where CD pushes images)
 
 ```bash
+: "${AR_REPO:?run block 0 first}" "${REGION:?run block 0 first}"
 gcloud artifacts repositories create "$AR_REPO" \
   --repository-format=docker --location="$REGION" \
   --description="TRACE SAR review app images"
@@ -79,6 +86,7 @@ gcloud artifacts repositories create "$AR_REPO" \
 ## 3. Secrets (the API key never touches a file, the command line or shell history)
 
 ```bash
+: "${KEY_SECRET:?run block 0 first}"
 gcloud secrets create "$KEY_SECRET" --replication-policy=automatic
 
 # Paste the key when prompted (nothing is shown), then press Enter
@@ -90,6 +98,7 @@ unset KEY
 Optional passcode gate (decision Q1). If you skip this, the public app opens without a passcode:
 
 ```bash
+: "${PASSCODE_SECRET:?run block 0 first}"
 gcloud secrets create "$PASSCODE_SECRET" --replication-policy=automatic
 read -rsp "App passcode to share with reviewers: " PASSCODE && echo
 printf '%s' "$PASSCODE" | gcloud secrets versions add "$PASSCODE_SECRET" --data-file=-
@@ -106,6 +115,7 @@ enabled`. Don't use `versions access`: it would print the key.
 It can read **only** this project's secrets, and nothing else.
 
 ```bash
+: "${RUN_SA:?run block 0 first}" "${RUN_SA_EMAIL:?run block 0 first}" "${KEY_SECRET:?run block 0 first}"
 gcloud iam service-accounts create "$RUN_SA" --display-name="TRACE SAR Cloud Run runtime"
 
 gcloud secrets add-iam-policy-binding "$KEY_SECRET" \
@@ -123,6 +133,7 @@ contains `serviceAccount:trace-sar-run@…`.
 ## 5. Deployer service account (what GitHub Actions acts as)
 
 ```bash
+: "${DEPLOY_SA_EMAIL:?run block 0 first}" "${RUN_SA_EMAIL:?run block 0 first}" "${AR_REPO:?run block 0 first}"
 gcloud iam service-accounts create "$DEPLOY_SA" --display-name="TRACE SAR GitHub deployer"
 
 # deploy and update Cloud Run services in this project
@@ -151,6 +162,7 @@ GitHub signs a short-lived token saying *"I am a workflow in `jansidv99-lab/TRAC
 fork, another repository or a feature branch cannot deploy.
 
 ```bash
+: "${POOL:?run block 0 first}" "${PROVIDER:?run block 0 first}" "${GITHUB_REPO:?run block 0 first}" "${PROJECT_NUMBER:?run block 0 first}" "${DEPLOY_SA_EMAIL:?run block 0 first}"
 gcloud iam workload-identity-pools create "$POOL" \
   --location=global --display-name="TRACE SAR GitHub Actions"
 
@@ -179,6 +191,7 @@ Keep it for step 8.
 ## 7. Budget alert (decision Q2: $5/month, emails at 50 %, 90 %, 100 %)
 
 ```bash
+: "${PROJECT_ID:?run block 0 first}"
 gcloud services enable billingbudgets.googleapis.com
 export BILLING_ACCOUNT="$(gcloud billing projects describe "$PROJECT_ID" \
   --format='value(billingAccountName)' | sed 's#billingAccounts/##')"
@@ -207,6 +220,7 @@ Set them in **GitHub → Settings → Secrets and variables → Actions → Vari
 `gh` CLI:
 
 ```bash
+: "${WIF_PROVIDER:?run block 6 first}" "${DEPLOY_SA_EMAIL:?run block 0 first}" "${RUN_SA_EMAIL:?run block 0 first}"
 gh variable set GCP_PROJECT_ID  --repo "$GITHUB_REPO" --body "$PROJECT_ID"
 gh variable set GCP_REGION      --repo "$GITHUB_REPO" --body "$REGION"
 gh variable set AR_REPO         --repo "$GITHUB_REPO" --body "$AR_REPO"
