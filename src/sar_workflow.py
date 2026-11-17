@@ -21,10 +21,11 @@ changes nothing, which is what makes the human gate enforceable rather than a co
 Shared by the notebook (Step 4.7), the Streamlit UI (Stage 05) and the tests.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from src.compliance_officer_agent import ComplianceError
 from src.foundation_sar import (
@@ -33,6 +34,7 @@ from src.foundation_sar import (
     ExplainabilityLogger,
     HumanDecision,
     RiskAnalystOutput,
+    count_words,
 )
 from src.risk_analyst_agent import RiskAnalysisError
 
@@ -184,6 +186,95 @@ class SARWorkflow:
         self._move(record, CaseStatus.COMPLIANCE_REVIEW)
         return record
 
+    # Phase 4 – Step 4.3: human risk gate; RISK_REVIEW → RISK_APPROVED or CLOSED_RISK_REJECTED
+    def record_risk_decision(self, case_id: str, decision: HumanDecision) -> CaseRecord:
+        record = self.get(case_id)
+        self._check_gate(record, decision, "risk", CaseStatus.RISK_REVIEW)
+        record.risk_decision = decision
+        approved = decision.decision == "approve"
+        self._move(
+            record, CaseStatus.RISK_APPROVED if approved else CaseStatus.CLOSED_RISK_REJECTED
+        )
+        risk = record.risk_output
+        self._log_decision(
+            record,
+            decision,
+            reviewed={
+                "classification": risk.classification,
+                "risk_level": risk.risk_level,
+                "confidence": risk.confidence_score,
+            },
+        )
+        return record
+
+    # Phase 4 – Step 4.3: human compliance gate; COMPLIANCE_REVIEW → SAR_FILED or
+    # CLOSED_COMPLIANCE_REJECTED (Step 4.4 writes the SAR document on approval)
+    def record_compliance_decision(self, case_id: str, decision: HumanDecision) -> CaseRecord:
+        record = self.get(case_id)
+        self._check_gate(record, decision, "compliance", CaseStatus.COMPLIANCE_REVIEW)
+        record.compliance_decision = decision
+        approved = decision.decision == "approve"
+        self._move(
+            record, CaseStatus.SAR_FILED if approved else CaseStatus.CLOSED_COMPLIANCE_REJECTED
+        )
+        out = record.compliance_output
+        self._log_decision(
+            record,
+            decision,
+            reviewed={
+                "narrative_words": count_words(out.narrative),
+                "citations": out.regulatory_citations,
+            },
+        )
+        return record
+
+    # Phase 4 – Step 4.3: run the whole flow for many cases, asking the reviewers at each gate
+    def process(
+        self, cases: list[CaseData], risk_reviewer: "Reviewer", compliance_reviewer: "Reviewer"
+    ) -> list[CaseRecord]:
+        """Add each case and push it as far as it can go. Sequential (Stage 04 decision 1)."""
+        records = []
+        for case in cases:
+            record = self.add_case(case)
+            self.run_risk_analysis(record.case_id)
+            if record.status == CaseStatus.RISK_REVIEW:
+                self.record_risk_decision(record.case_id, risk_reviewer.review(record, "risk"))
+            if record.status == CaseStatus.RISK_APPROVED:
+                self.run_compliance(record.case_id)
+            if record.status == CaseStatus.COMPLIANCE_REVIEW:
+                self.record_compliance_decision(
+                    record.case_id, compliance_reviewer.review(record, "compliance")
+                )
+            records.append(record)
+        return records
+
+    # Phase 4 – Step 4.3: a decision must be for this gate, and the case must be waiting at it
+    def _check_gate(
+        self, record: CaseRecord, decision: HumanDecision, gate: str, expected: CaseStatus
+    ) -> None:
+        if decision.gate != gate:
+            raise WorkflowError(
+                f"a '{decision.gate}' decision cannot be recorded at the {gate} gate"
+            )
+        self._require(record, expected, f"record a {gate} gate decision")
+
+    # Phase 4 – Step 4.3: one Human audit event per decision — approvals AND rejections
+    def _log_decision(
+        self, record: CaseRecord, decision: HumanDecision, reviewed: dict[str, Any]
+    ) -> None:
+        self.logger.log_agent_action(
+            agent_type="Human",
+            action=f"{decision.gate}_gate_decision",
+            case_id=record.case_id,
+            input_data=reviewed,
+            output_data={"decision": decision.decision, "new_status": str(record.status)},
+            reasoning=decision.reason or f"Approved by {decision.reviewer_id}",
+            execution_time_ms=0.0,
+            reviewer_id=decision.reviewer_id,
+            decision=decision.decision,
+            decided_at=decision.decided_at.isoformat(),
+        )
+
     # Phase 4 – Step 4.2: guard with a readable message before attempting an action
     @staticmethod
     def _require(record: CaseRecord, expected: CaseStatus, action: str) -> None:
@@ -231,3 +322,82 @@ class SARWorkflow:
         return StageStats.from_run(
             getattr(agent, "last_run", None), getattr(agent, "prompt_version", None)
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 – Step 4.3: reviewer policies — objects that produce HumanDecisions
+# ---------------------------------------------------------------------------
+# Phase 4 – Step 4.3: anything with this method can sit at a gate (scripted, console, Streamlit)
+class Reviewer(Protocol):
+    def review(self, record: CaseRecord, gate: str) -> HumanDecision: ...
+
+
+LOW_RISK_REASON = "Low risk: activity is consistent with the customer profile; no SAR warranted."
+
+
+# Phase 4 – Step 4.3: deterministic reviewer for tests and demos
+class ScriptedReviewer:
+    """Default policy: reject `Low` at the risk gate (Stage 04 decision 4), approve everything else.
+
+    `answers` overrides the policy per case and gate:
+    `{(case_id, "risk"): ("reject", "false positive"), ...}`.
+    """
+
+    def __init__(
+        self,
+        reviewer_id: str = "scripted_reviewer",
+        answers: dict[tuple[str, str], tuple[str, str | None]] | None = None,
+    ) -> None:
+        self.reviewer_id = reviewer_id
+        self.answers = answers or {}
+
+    # Phase 4 – Step 4.3: fixed answer if given, else the default policy
+    def review(self, record: CaseRecord, gate: str) -> HumanDecision:
+        if (record.case_id, gate) in self.answers:
+            decision, reason = self.answers[(record.case_id, gate)]
+        elif gate == "risk" and record.risk_output.risk_level == "Low":
+            decision, reason = "reject", LOW_RISK_REASON
+        else:
+            decision, reason = "approve", None
+        return HumanDecision(
+            gate=gate, decision=decision, reviewer_id=self.reviewer_id, reason=reason
+        )
+
+
+# Phase 4 – Step 4.3: interactive reviewer for the notebook; input/print are injectable for tests
+class ConsoleReviewer:
+    def __init__(
+        self,
+        reviewer_id: str,
+        input_fn: Callable[[str], str] = input,
+        print_fn: Callable[..., None] = print,
+    ) -> None:
+        self.reviewer_id = reviewer_id
+        self.input = input_fn
+        self.print = print_fn
+
+    # Phase 4 – Step 4.3: show what is being reviewed, then ask until the answer is valid
+    def review(self, record: CaseRecord, gate: str) -> HumanDecision:
+        self.print(f"=== {gate.upper()} GATE | {record.case_id} ===")
+        if gate == "risk":
+            r = record.risk_output
+            self.print(f"{r.classification} | {r.risk_level} | confidence {r.confidence_score}")
+            for indicator in r.key_indicators:
+                self.print(f"  - {indicator}")
+        else:
+            out = record.compliance_output
+            self.print(out.narrative)
+            self.print(f"({count_words(out.narrative)} words) Citations: "
+                       f"{'; '.join(out.regulatory_citations)}")
+        while True:
+            answer = self.input("Approve or reject? [a/r]: ").strip().lower()
+            if answer in ("a", "approve"):
+                return HumanDecision(gate=gate, decision="approve", reviewer_id=self.reviewer_id)
+            if answer in ("r", "reject"):
+                reason = ""
+                while not reason:
+                    reason = self.input("Reason for rejection: ").strip()
+                return HumanDecision(
+                    gate=gate, decision="reject", reviewer_id=self.reviewer_id, reason=reason
+                )
+            self.print("Please type 'a' or 'r'.")

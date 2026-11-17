@@ -88,7 +88,7 @@ Plan: [`plan/04-workflow-integration/plan.md`](plan/04-workflow-integration/plan
 |---|---|---|
 | 4.1 Gate and SAR schemas | ✅ | `HumanDecision`, `SARDocument`, `AgentType` += `Workflow` |
 | 4.2 Workflow core | ✅ | `src/sar_workflow.py` (state machine, manual-review routing) |
-| 4.3 Human decision gates | ⏳ | audited gate decisions, scripted + console reviewers |
+| 4.3 Human decision gates | ✅ | audited gate decisions, scripted + console reviewers |
 | 4.4 SAR document generation | ⏳ | `outputs/sars/<sar_id>.json` |
 | 4.5 Efficiency metrics | ⏳ | `src/metrics.py` (cost per stage, cost avoided) |
 | 4.6 Integration tests | ⏳ | `tests/test_workflow.py` |

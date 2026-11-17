@@ -9,13 +9,25 @@ from types import SimpleNamespace
 import pytest
 
 from src.compliance_officer_agent import ComplianceError
-from src.foundation_sar import ComplianceOfficerOutput, ExplainabilityLogger, RiskAnalystOutput
+from src.foundation_sar import (
+    AccountData,
+    CaseData,
+    ComplianceOfficerOutput,
+    CustomerData,
+    ExplainabilityLogger,
+    HumanDecision,
+    RiskAnalystOutput,
+    TransactionData,
+)
 from src.risk_analyst_agent import RiskAnalysisError
 from src.sar_workflow import (
     FINAL_STATUSES,
+    LOW_RISK_REASON,
     TRANSITIONS,
     CaseStatus,
+    ConsoleReviewer,
     SARWorkflow,
+    ScriptedReviewer,
     StageStats,
     WorkflowError,
 )
@@ -46,7 +58,8 @@ class StubRiskAgent:
         )
         if self.error:
             raise RiskAnalysisError(case.case_id, self.error, 3)
-        return self.result
+        # Phase 4 – Step 4.3: a dict gives a different result per case
+        return self.result[case.case_id] if isinstance(self.result, dict) else self.result
 
 
 class StubComplianceAgent:
@@ -206,3 +219,166 @@ def test_final_case_cannot_move(audit, sample_case):
 # Phase 4 – Step 4.2: stats tolerate a missing run (agent crashed before creating one)
 def test_stage_stats_from_missing_run():
     assert StageStats.from_run(None, "V1") == StageStats(prompt_version="V1")
+
+
+# ===========================================================================
+# Phase 4 – Step 4.3: human decision gates and reviewer policies
+# ===========================================================================
+def _decision(gate, decision="approve", reason=None, reviewer="analyst_1"):
+    return HumanDecision(gate=gate, decision=decision, reviewer_id=reviewer, reason=reason)
+
+
+# Phase 4 – Step 4.3: a case waiting at the risk gate
+@pytest.fixture
+def at_risk_gate(audit, sample_case):
+    compliance = StubComplianceAgent()
+    wf = _workflow(audit, compliance=compliance)
+    wf.add_case(sample_case)
+    wf.run_risk_analysis(sample_case.case_id)
+    return wf, compliance, sample_case.case_id
+
+
+# Phase 4 – Step 4.3: approval moves on and writes one Human audit event
+def test_risk_gate_approve(at_risk_gate, audit):
+    wf, _, cid = at_risk_gate
+    rec = wf.record_risk_decision(cid, _decision("risk"))
+    assert rec.status == CaseStatus.RISK_APPROVED
+    assert rec.risk_decision.reviewer_id == "analyst_1"
+    [event] = _records(audit[1])
+    assert event["agent_type"] == "Human"
+    assert event["action"] == "risk_gate_decision"
+    assert event["decision"] == "approve" and event["reviewer_id"] == "analyst_1"
+    assert event["input_summary"] == {
+        "classification": "Structuring", "risk_level": "High", "confidence": 0.9
+    }
+    assert event["output"] == {"decision": "approve", "new_status": "RISK_APPROVED"}
+
+
+# Phase 4 – Step 4.3: rejection closes the case, is audited with its reason, blocks Stage 2
+def test_risk_gate_reject(at_risk_gate, audit):
+    wf, compliance, cid = at_risk_gate
+    rec = wf.record_risk_decision(cid, _decision("risk", "reject", "false positive: payroll"))
+    assert rec.status == CaseStatus.CLOSED_RISK_REJECTED and rec.is_final
+    [event] = _records(audit[1])
+    assert event["reasoning"] == "false positive: payroll"
+    with pytest.raises(WorkflowError):
+        wf.run_compliance(cid)
+    assert compliance.calls == 0
+
+
+# Phase 4 – Step 4.3: wrong gate, wrong time, or deciding twice → error, nothing changes
+def test_gate_guards(at_risk_gate, audit):
+    wf, _, cid = at_risk_gate
+    with pytest.raises(WorkflowError, match="cannot be recorded at the risk gate"):
+        wf.record_risk_decision(cid, _decision("compliance"))
+    with pytest.raises(WorkflowError, match="expected COMPLIANCE_REVIEW"):
+        wf.record_compliance_decision(cid, _decision("compliance"))
+    assert wf.get(cid).status == CaseStatus.RISK_REVIEW
+    assert _records(audit[1]) == []  # no event for refused decisions
+    wf.record_risk_decision(cid, _decision("risk"))
+    with pytest.raises(WorkflowError, match="status is RISK_APPROVED"):
+        wf.record_risk_decision(cid, _decision("risk"))
+
+
+def test_decision_before_analysis_rejected(audit, sample_case):
+    wf = _workflow(audit)
+    wf.add_case(sample_case)
+    with pytest.raises(WorkflowError, match="status is NEW"):
+        wf.record_risk_decision(sample_case.case_id, _decision("risk"))
+
+
+# Phase 4 – Step 4.3: compliance gate outcomes
+@pytest.mark.parametrize(
+    ("decision", "reason", "status"),
+    [
+        ("approve", None, CaseStatus.SAR_FILED),
+        ("reject", "narrative omits the branch", CaseStatus.CLOSED_COMPLIANCE_REJECTED),
+    ],
+)
+def test_compliance_gate(at_risk_gate, audit, decision, reason, status):
+    wf, _, cid = at_risk_gate
+    wf.record_risk_decision(cid, _decision("risk"))
+    wf.run_compliance(cid)
+    rec = wf.record_compliance_decision(
+        cid, _decision("compliance", decision, reason, "officer_1")
+    )
+    assert rec.status == status and rec.is_final
+    event = _records(audit[1])[-1]
+    assert event["action"] == "compliance_gate_decision"
+    assert event["reviewer_id"] == "officer_1"
+    assert event["input_summary"]["citations"] == ["31 U.S.C. 5318(g)"]
+
+
+# Phase 4 – Step 4.3: a second customer, so process() can handle a batch
+@pytest.fixture
+def second_case(customer_row, account_row, transaction_row, created_at) -> CaseData:
+    return CaseData(
+        case_id="CASE_CUST_0003_20261116120000",
+        customer=CustomerData(**{**customer_row, "customer_id": "CUST_0003", "name": "Al Ng"}),
+        accounts=[AccountData(**{**account_row, "customer_id": "CUST_0003",
+                                 "account_id": "CUST_0003_ACC_1"})],
+        transactions=[TransactionData(**{**transaction_row, "account_id": "CUST_0003_ACC_1"})],
+        case_created_at=created_at,
+    )
+
+
+LOW = RISK.model_copy(update={"risk_level": "Low", "classification": "Other"})
+
+
+# Phase 4 – Step 4.3: Stage 2 only runs for the case the scripted reviewer approved
+def test_process_runs_only_approved_cases(audit, sample_case, second_case):
+    risk = StubRiskAgent(result={sample_case.case_id: RISK, second_case.case_id: LOW})
+    compliance = StubComplianceAgent()
+    wf = _workflow(audit, risk=risk, compliance=compliance)
+    high, low = wf.process(
+        [sample_case, second_case], ScriptedReviewer("analyst_1"), ScriptedReviewer("officer_1")
+    )
+    assert high.status == CaseStatus.SAR_FILED
+    assert low.status == CaseStatus.CLOSED_RISK_REJECTED
+    assert low.risk_decision.reason == LOW_RISK_REASON
+    assert risk.calls == 2 and compliance.calls == 1  # the cost optimization, in one line
+    actions = [(e["case_id"][5:14], e["action"]) for e in _records(audit[1])]
+    assert actions == [
+        ("CUST_0002", "risk_gate_decision"),
+        ("CUST_0002", "compliance_gate_decision"),
+        ("CUST_0003", "risk_gate_decision"),
+    ]
+
+
+# Phase 4 – Step 4.3: failed cases skip the gates entirely
+def test_process_failure_skips_reviewers(audit, sample_case):
+    class NeverAsked:
+        def review(self, record, gate):
+            raise AssertionError("reviewer must not be asked about a failed case")
+
+    wf = _workflow(audit, risk=StubRiskAgent(error="timeout"))
+    [rec] = wf.process([sample_case], NeverAsked(), NeverAsked())
+    assert rec.status == CaseStatus.MANUAL_REVIEW
+
+
+# Phase 4 – Step 4.3: fixed answers override the default policy
+def test_scripted_reviewer_answers(at_risk_gate):
+    wf, _, cid = at_risk_gate
+    reviewer = ScriptedReviewer(answers={(cid, "risk"): ("reject", "known customer")})
+    d = reviewer.review(wf.get(cid), "risk")
+    assert (d.decision, d.reason, d.reviewer_id) == (
+        "reject", "known customer", "scripted_reviewer"
+    )
+    assert ScriptedReviewer().review(wf.get(cid), "risk").decision == "approve"  # High
+
+
+# Phase 4 – Step 4.3: the console reviewer re-asks until answers are valid
+def test_console_reviewer(at_risk_gate):
+    wf, _, cid = at_risk_gate
+    answers, printed = iter(["maybe", "r", "  ", "insufficient evidence"]), []
+    reviewer = ConsoleReviewer(
+        "me",
+        input_fn=lambda _prompt: next(answers),
+        print_fn=lambda *a: printed.append(" ".join(map(str, a))),
+    )
+    d = reviewer.review(wf.get(cid), "risk")
+    assert (d.decision, d.reason, d.reviewer_id) == ("reject", "insufficient evidence", "me")
+    assert any("RISK GATE" in p for p in printed)
+    assert any("Please type" in p for p in printed)
+    approve = ConsoleReviewer("me", input_fn=lambda _prompt: "a", print_fn=lambda *a: None)
+    assert approve.review(wf.get(cid), "risk").decision == "approve"
