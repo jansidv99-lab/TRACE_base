@@ -1,0 +1,7 @@
+# Phase 5 – Step 5.1: Streamlit settings for this app
+[server]
+headless = true
+
+[browser]
+# no usage telemetry sent to Streamlit
+gatherUsageStats = false

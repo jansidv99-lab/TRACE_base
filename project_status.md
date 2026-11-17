@@ -10,8 +10,8 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 01 – Foundation & data modeling | ✅ | `feature/foundation-schemas` (PR #2), `feature/foundation-data-exploration` (PR #3) merged |
 | 02 – Risk Analyst agent | ✅ | `feature/risk-analyst-agent` · PR #4 merged |
 | 03 – Compliance Officer agent | ✅ | `feature/compliance-officer-agent` · PR #5 merged |
-| 04 – Workflow integration & human gates | ✅ implemented, PR pending | `feature/sar-workflow` |
-| 05 – Streamlit UI | ⏳ | – |
+| 04 – Workflow integration & human gates | ✅ | `feature/sar-workflow` · PR #6 merged |
+| 05 – Streamlit UI | 🔄 in progress | `feature/streamlit-review-ui` |
 | 06 – Test suite consolidation | ⏳ | – |
 | 07 – CI/CD to GCP | ⏳ | – |
 | 08 – AI QA framework | ⏳ | – |
@@ -81,7 +81,7 @@ Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-ag
 - Weak Risk Analyst calls flow through faithfully (GEO case classified Structuring on $4.8k/$7.4k deposits)
   → shows why the Stage 04 human gate matters.
 
-## Stage 04 – Workflow integration & human gates ✅ (PR pending)
+## Stage 04 – Workflow integration & human gates ✅
 Plan: [`plan/04-workflow-integration/plan.md`](plan/04-workflow-integration/plan.md) — approved with all recommendations (sequential batch, PII in SAR file only, approve/reject only, all cases to the gate, tests before notebook)
 
 | Step | Status | Output |
@@ -104,14 +104,29 @@ Plan: [`plan/04-workflow-integration/plan.md`](plan/04-workflow-integration/plan
 - Notebook projection to 119 active cases uses an approval rate that includes the free
   zero-activity rejection → slightly optimistic; labelled as a rough assumption.
 
-## Stage 05 – Streamlit UI ⏳
-| Step | Status |
-|---|---|
-| 5.1 Case queue | ⏳ |
-| 5.2 Risk review screen | ⏳ |
-| 5.3 Compliance review screen | ⏳ |
-| 5.4 SAR & audit views | ⏳ |
-| 5.5 Metrics panel | ⏳ |
+## Stage 05 – Streamlit UI 🔄
+Plan: [`plan/05-streamlit-ui/plan.md`](plan/05-streamlit-ui/plan.md) — approved with all recommendations (session-only state, segregation of duties enforced in the workflow, batch N ≤ 10, free-text reviewer ID, added setup/tests/walk-through steps)
+
+| Step | Status | Output |
+|---|---|---|
+| 5.1 Setup and app shell | ✅ | `app/streamlit_app.py`, `app/state.py`, `.streamlit/config.toml` |
+| 5.2 Case queue | ✅ | `app/views/queue.py` |
+| 5.3 Risk review screen | ✅ | `app/views/risk_review.py` |
+| 5.4 Compliance review screen | ✅ | `app/views/compliance_review.py` |
+| 5.5 SAR & audit views | ✅ | `app/views/sars_audit.py`, `read_audit_events` |
+| 5.6 Metrics panel | ✅ | `app/views/metrics.py` |
+| 5.7 UI tests | ✅ | `tests/test_streamlit_app.py`, `tests/test_ui_helpers.py` (50 tests, see map below) |
+| 5.8 Manual walk-through | ⏳ | findings recorded here |
+
+**UI test coverage map (Step 5.7, 50 tests):** app shell 7 · case queue 6 · risk review 6 ·
+compliance review 7 · SARs & audit 4 · metrics 3 · end-to-end journey with real agents on
+`FakeLLMClient` 1 · pure helpers (`app/ui_helpers.py`) 16.
+
+**Decisions (Stage 05):**
+- Review screens (queue, risk review, compliance review) never show real transaction IDs: the
+  journey test fails on any planted prefix (`STRUCT_`, `LARGE_`, …). The **SARs & audit** page keeps
+  real IDs on purpose (developer decision, 2026-11-17): it is the post-decision record an examiner
+  reads, and the SAR file and audit log must hold the real IDs.
 
 ## Stage 06 – Test suite consolidation ⏳
 | Step | Status |

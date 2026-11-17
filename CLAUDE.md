@@ -48,7 +48,7 @@ ruff check .                                 # lint: line length 100, rules E,F,
 pytest                                       # unit tests; `llm`-marked tests are skipped by default
 pytest tests/test_foundation.py::test_name   # single test
 pytest -m llm                                # opt in to tests that call the real LLM
-streamlit run <app>.py                       # Phase 5 UI (entry point TBD)
+streamlit run app/streamlit_app.py           # Phase 5 review UI (http://localhost:8501)
 ```
 
 `.env` keys: `OPENAI_API_KEY`, `OPENAI_BASE_URL` (OpenAI-compatible endpoint — pass it to the client,
