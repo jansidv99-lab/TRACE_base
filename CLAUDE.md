@@ -26,16 +26,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-As of 2026-11-16: Stages 01–02 are implemented (see `project_status.md`).
-- `src/foundation_sar.py`: schemas, `ExplainabilityLogger`, `DataLoader`.
-- `src/risk_analyst_agent.py` + `src/case_formatter.py` + `src/prompts/risk_analyst_V1.md`: the
-  Chain-of-Thought agent. The formatter masks transaction IDs as `T001…` (the real ID prefixes such as
-  `STRUCT_` leak the answer) and drops PII; the agent uses `temperature=0`, `seed=42`, JSON mode,
-  one repair retry and exponential backoff, and raises `RiskAnalysisError` on final failure.
-- Tests: `tests/conftest.py` (sample-record fixtures) and `tests/fakes.py` (`FakeLLMClient`, openai
-  error builders); reuse both in later stages. Next: Stage 03 (Compliance Officer agent). `.env` holds a real API key and is git-ignored; keep it that way (commit `.env.example`
-instead). Audit logs (`*.jsonl`, `logs/`) and `outputs/` are also ignored.
-Master plan: `plan/00-master/plan.md`.
+Per-step progress lives in `project_status.md` (imported at the end of this file); update it, not
+this section. Master plan: `plan/00-master/plan.md`.
+`.env` holds a real API key and is git-ignored (commit `.env.example` instead). Audit logs
+(`*.jsonl`, `logs/`) and `outputs/` are also ignored. Reuse `tests/conftest.py` (sample-record
+fixtures) and `tests/fakes.py` (`FakeLLMClient`, openai error builders) in every stage.
 
 ## Commands
 
@@ -81,14 +76,40 @@ project_data/*.csv → DataLoader → CaseData
   decisions (approvals and rejections) — the audit trail is a regulatory deliverable.
 - Workflow logic lives in `src/sar_workflow.py` (shared by the notebook, Streamlit UI and tests);
   `notebooks/03_workflow_integration.ipynb` only demonstrates it.
-- Planned module locations: `src/foundation_sar.py` (all Pydantic schemas + `DataLoader` +
-  `ExplainabilityLogger`), `src/risk_analyst_agent.py`, `src/compliance_officer_agent.py`,
-  `notebooks/03_workflow_integration.ipynb`, `tests/test_foundation.py`, `tests/test_risk_analyst.py`,
-  `tests/test_compliance_officer.py`.
+- `src/foundation_sar.py` holds all Pydantic schemas + `DataLoader` + `ExplainabilityLogger`.
+  Not yet created: `src/sar_workflow.py`, `notebooks/03_*.ipynb`, `tests/test_compliance_officer.py`.
 - Output contracts: risk classification ∈ {Structuring, Sanctions, Fraud, Money_Laundering, Other},
   confidence 0.0–1.0, risk level ∈ {Low, Medium, High, Critical}. SAR narrative must be **fewer than
   120 words** (`word_count < 120`; overrides the generic 100–200 guidance), must answer
   who/what/when/where/why, and cite BSA/AML regulations.
+
+### Shared building blocks (used by both agents)
+
+- `src/llm_client.get_llm_client()` builds the OpenAI client from `OPENAI_BASE_URL`. `src/llm_utils`
+  holds `call_with_retry` (exponential backoff on transient errors), `extract_json`, `add_usage`
+  (token totals for cost tracking) and `DEFAULT_SEED=42`. New agents should use these rather than
+  writing their own retry or parse logic.
+- `src/case_formatter` masks real transaction IDs to `T001…` (real prefixes such as `STRUCT_` leak
+  the answer) and drops PII before anything reaches the LLM. `remask`/`unmask` convert between real
+  IDs and refs: risk findings are re-masked going into the compliance agent, and its reasoning is
+  unmasked coming out. Never send raw IDs to a model.
+- Prompts are versioned files `src/prompts/<agent>_V<n>.md`, loaded with `load_prompt()`. A
+  behaviour change means a new `V<n>` file, not an edit to the old one.
+
+### Risk Analyst (`src/risk_analyst_agent.py`)
+
+Chain-of-Thought, single call: `temperature=0`, `seed=42`, JSON mode, one repair retry on malformed
+output, short-circuit for zero-activity cases; raises `RiskAnalysisError` on final failure.
+
+### Compliance Officer ReACT loop (`src/compliance_officer_agent.py`)
+
+A real function-calling loop, not text parsing. Each turn uses `tool_choice="required"`, and
+`ComplianceToolbox` (`src/compliance_tools.py`) runs one of 4 tools. Bad arguments come back to the
+model as error observations instead of exceptions. `submit_narrative` is accepted only when every
+deterministic check in `src/narrative_checks.py` passes (word count < 120, the 5 W's, banned terms,
+no internal IDs, dates and amounts that match the case, citations from the `src/regulations.py`
+allowlist). A rejection is sent back to the model so it can revise. If the step budget runs out,
+the agent raises `ComplianceError`, and Stage 04 sends that case to manual review.
 
 ### Data (`project_data/`, not `data/` as `project_goal.md` says)
 
@@ -105,4 +126,4 @@ The Phase 3 section first repeats the Phase 2 (`risk_analyst_agent.py`) checklis
 heading; the real Phase 3 deliverables are under "Phase 3 Deliverables: Compliance Officer Agent".
 
 ## Project status
-@project_status.md list all the phases and realted steps  and provide the status of each step 
+@project_status.md
