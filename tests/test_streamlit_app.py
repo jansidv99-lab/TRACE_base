@@ -24,16 +24,40 @@ PAGES = [
 ]
 
 
-# Phase 5 – Step 5.1: the app with a stub workflow holding the conftest sample case
+# Phase 5 – Step 5.2: three customers (CUST_0002..0004) built from the conftest sample case
 @pytest.fixture
-def app(tmp_path, sample_case) -> AppTest:
+def cases(sample_case):
+    out = []
+    for n in (2, 3, 4):
+        cid = f"CUST_{n:04d}"
+        customer = sample_case.customer.model_copy(update={"customer_id": cid})
+        account = sample_case.accounts[0].model_copy(
+            update={"customer_id": cid, "account_id": f"{cid}_ACC_1"}
+        )
+        txns = [t.model_copy(update={"account_id": f"{cid}_ACC_1"})
+                for t in sample_case.transactions]
+        out.append(sample_case.model_copy(update={
+            "case_id": f"CASE_{cid}_20261116120000", "customer": customer,
+            "accounts": [account], "transactions": txns,
+        }))
+    return out
+
+
+# Phase 5 – Step 5.1: build an AppTest around a stub workflow (no browser, no API)
+def _app(tmp_path, cases, risk=None) -> tuple[AppTest, SARWorkflow]:
     logger = ExplainabilityLogger(tmp_path / "audit.jsonl")
-    workflow = SARWorkflow(StubRiskAgent(), StubComplianceAgent(), logger,
+    workflow = SARWorkflow(risk or StubRiskAgent(), StubComplianceAgent(), logger,
                            output_dir=tmp_path / "outputs")
-    workflow.add_case(sample_case)
+    for case in cases:
+        workflow.add_case(case)
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state["workflow"] = workflow
-    return at
+    return at, workflow
+
+
+@pytest.fixture
+def app(tmp_path, cases) -> AppTest:
+    return _app(tmp_path, cases)[0]
 
 
 # Phase 5 – Step 5.1: the shell renders: sidebar, reviewer warning, models, session cost
@@ -59,3 +83,73 @@ def test_every_page_opens(app, page):
     app.run()
     app.switch_page(page).run()
     assert not app.exception, app.exception
+
+
+# ===========================================================================
+# Phase 5 – Step 5.2: case queue
+# ===========================================================================
+def _table(at):
+    return at.dataframe[0].value
+
+
+# Phase 5 – Step 5.2: all cases listed as NEW, with tiles and no answer-key column
+def test_queue_lists_cases(app):
+    app.run()
+    df = _table(app)
+    assert list(df["customer"]) == ["CUST_0002", "CUST_0003", "CUST_0004"]
+    assert set(df["status"]) == {"NEW"}
+    assert "transaction_id" not in df.columns
+    assert app.metric[0].label == "New" and app.metric[0].value == "3"
+
+
+# Phase 5 – Step 5.2: analyze one selected case → RISK_REVIEW, success message after rerun
+def test_analyze_selected_case(tmp_path, cases):
+    at, wf = _app(tmp_path, cases)
+    at.run()
+    at.selectbox(key="analyze_case").select(cases[1].case_id)
+    at.button(key="analyze_one").click().run()
+    assert not at.exception
+    assert wf.get(cases[1].case_id).status == "RISK_REVIEW"
+    assert wf.get(cases[0].case_id).status == "NEW"
+    assert any("Structuring / High" in s.value for s in at.success)
+    assert list(_table(at)["status"]) == ["NEW", "RISK_REVIEW", "NEW"]
+
+
+# Phase 5 – Step 5.2: analyze next N → the first N new cases, in order
+def test_analyze_next_n(tmp_path, cases):
+    at, wf = _app(tmp_path, cases)
+    at.run()
+    at.number_input(key="batch_n").set_value(2).run()
+    # stub model is unpriced → Stage 04 default of $0.0008 per active case
+    assert any("2 case(s) · estimated cost ≈ $0.0016" in c.value for c in at.caption)
+    at.button(key="analyze_batch").click().run()
+    assert [wf.get(c.case_id).status for c in cases] == ["RISK_REVIEW", "RISK_REVIEW", "NEW"]
+    assert len(at.success) == 2
+
+
+# Phase 5 – Step 5.2: a failing agent is reported as manual review, not a crash
+def test_analyze_failure_shows_error(tmp_path, cases):
+    at, wf = _app(tmp_path, cases, risk=StubRiskAgent(error="model timeout"))
+    at.run()
+    at.button(key="analyze_one").click().run()
+    assert not at.exception
+    assert wf.get(cases[0].case_id).status == "MANUAL_REVIEW"
+    assert any("manual review" in e.value for e in at.error)
+
+
+# Phase 5 – Step 5.2: the status filter narrows the table
+def test_status_filter(tmp_path, cases):
+    at, wf = _app(tmp_path, cases)
+    wf.run_risk_analysis(cases[0].case_id)
+    at.run()
+    at.multiselect(key="status_filter").select("RISK_REVIEW").run()
+    assert list(_table(at)["customer"]) == ["CUST_0002"]
+
+
+# Phase 5 – Step 5.2: nothing left to analyze → info message, batch button disabled
+def test_no_new_cases(tmp_path, cases):
+    at, wf = _app(tmp_path, cases[:1])
+    wf.run_risk_analysis(cases[0].case_id)
+    at.run()
+    assert any("No new cases" in i.value for i in at.info)
+    assert at.button(key="analyze_batch").disabled

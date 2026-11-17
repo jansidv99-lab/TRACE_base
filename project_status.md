@@ -110,7 +110,7 @@ Plan: [`plan/05-streamlit-ui/plan.md`](plan/05-streamlit-ui/plan.md) — approve
 | Step | Status | Output |
 |---|---|---|
 | 5.1 Setup and app shell | ✅ | `app/streamlit_app.py`, `app/state.py`, `.streamlit/config.toml` |
-| 5.2 Case queue | ⏳ | `app/views/queue.py` |
+| 5.2 Case queue | ✅ | `app/views/queue.py` |
 | 5.3 Risk review screen | ⏳ | `app/views/risk_review.py` |
 | 5.4 Compliance review screen | ⏳ | `app/views/compliance_review.py` |
 | 5.5 SAR & audit views | ⏳ | `app/views/sars_audit.py`, `read_audit_events` |

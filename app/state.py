@@ -64,6 +64,20 @@ def get_workflow() -> SARWorkflow:
     return st.session_state[WORKFLOW_KEY]
 
 
+# Phase 5 – Step 5.2: one-shot messages that survive the st.rerun() after an action
+FLASH_KEY = "flash_messages"
+
+
+def flash(kind: str, message: str) -> None:
+    """Queue a message (`kind` ∈ success / info / warning / error) for the next run."""
+    st.session_state.setdefault(FLASH_KEY, []).append((kind, message))
+
+
+def show_flash() -> None:
+    for kind, message in st.session_state.pop(FLASH_KEY, []):
+        getattr(st, kind)(message)
+
+
 # Phase 5 – Step 5.1: the reviewer ID typed in the sidebar; None means decisions are blocked
 def reviewer_id() -> str | None:
     value = (st.session_state.get(REVIEWER_KEY) or "").strip()
