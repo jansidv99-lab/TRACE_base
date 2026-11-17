@@ -14,6 +14,7 @@ from typing import Any
 
 from src.case_formatter import format_case_for_llm, remask
 from src.foundation_sar import CaseData
+from src.metrics import GateSummary, WorkflowMetrics
 from src.narrative_checks import NarrativeReport, check_narrative
 from src.sar_workflow import CaseRecord, CaseStatus
 
@@ -258,3 +259,36 @@ def audit_rows(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         "prompt": e.get("prompt_version"),
         "reasoning": _short(e.get("reasoning") or e.get("error_message") or "", 120),
     } for e in events]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 – Step 5.6: metrics panel
+# ---------------------------------------------------------------------------
+NOT_MEASURABLE = "not measurable yet"
+
+
+def _rate(gate: GateSummary) -> str:
+    if gate.approval_rate is None:
+        return "—"
+    return f"{gate.approval_rate:.0%} ({gate.approved}/{gate.decided})"
+
+
+# Phase 5 – Step 5.6: headline tiles as display strings; no savings claim without a measurement
+def metric_tiles(m: WorkflowMetrics) -> dict[str, str]:
+    processed = m.cases - m.status_counts.get("NEW", 0)
+    avoided, rate = m.cost_avoided_usd, m.savings_rate
+    return {
+        "Cases processed": f"{processed} / {m.cases}",
+        "SARs filed": str(m.status_counts.get("SAR_FILED", 0)),
+        "Total cost (est.)": f"${m.total_cost_usd:.4f}",
+        "Cost avoided": NOT_MEASURABLE if avoided is None else f"${avoided:.4f}",
+        "Savings rate": "—" if rate is None else f"{rate:.0%}",
+        "Time avoided": "—" if m.time_avoided_s is None else f"{m.time_avoided_s:.0f} s",
+        "Risk gate approval": _rate(m.risk_gate),
+        "Compliance gate approval": _rate(m.compliance_gate),
+    }
+
+
+# Phase 5 – Step 5.6: runs whose model has no price entry (tokens counted, dollars not)
+def unpriced_runs(m: WorkflowMetrics) -> int:
+    return m.risk.unpriced_runs + m.compliance.unpriced_runs

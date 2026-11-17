@@ -408,3 +408,74 @@ def test_audit_without_sar(tmp_path, cases):
     at, _ = _sars_page(tmp_path, cases, file_sar=False)
     assert any("No SARs filed" in c.value for c in at.caption)
     assert list(at.dataframe[-1].value["action"]) == ["risk_gate_decision"]
+
+
+# ===========================================================================
+# Phase 5 – Step 5.6: metrics panel
+# ===========================================================================
+PRICED = "gpt-4o-mini-2024-07-18"
+
+
+def _tiles(at):
+    return {m.label: m.value for m in at.main.metric}
+
+
+def test_metrics_page_empty(app):
+    app.run()
+    app.switch_page("views/metrics.py").run()
+    assert not app.exception
+    tiles = _tiles(app)
+    assert tiles["Cases processed"] == "0 / 3"
+    assert tiles["Cost avoided"] == "not measurable yet"
+    assert any("No saving is claimed" in i.value for i in app.info)
+    assert not app.main.warning  # no runs, so nothing unpriced (sidebar has its own warning)
+    assert any("Prices are assumptions" in c.value for c in app.caption)
+
+
+# Phase 5 – Step 5.6: one SAR + one risk rejection → cost avoided = one measured narrative
+def _metrics_session(tmp_path, cases, priced=True):
+    at, wf = _app(tmp_path, cases, compliance=StubComplianceAgent(result=GOOD_NARRATIVE))
+    filed, rejected = cases[0].case_id, cases[1].case_id
+    for cid in (filed, rejected):
+        wf.run_risk_analysis(cid)
+    wf.record_risk_decision(filed, HumanDecision(gate="risk", decision="approve",
+                                                 reviewer_id="analyst_1"))
+    wf.record_risk_decision(rejected, HumanDecision(gate="risk", decision="reject",
+                                                    reviewer_id="analyst_1", reason="payroll"))
+    wf.run_compliance(filed)
+    wf.record_compliance_decision(filed, HumanDecision(gate="compliance", decision="approve",
+                                                       reviewer_id="officer_1"))
+    if priced:  # stub agents report "fake-model"; give them a priced model name
+        for rec in wf.records.values():
+            for stats in (rec.risk_stats, rec.compliance_stats):
+                if stats:
+                    stats.model = PRICED
+    at.run()
+    at.switch_page("views/metrics.py").run()
+    return at
+
+
+def test_metrics_page_cost_avoided(tmp_path, cases):
+    at = _metrics_session(tmp_path, cases)
+    assert not at.exception
+    tiles = _tiles(at)
+    # stub runs: risk 900 in / 100 out = $0.000195; compliance 5000 in / 200 out = $0.00087
+    assert tiles["Cases processed"] == "2 / 3"
+    assert tiles["SARs filed"] == "1"
+    assert tiles["Total cost (est.)"] == "$0.0013"  # 2 × 0.000195 + 0.00087
+    assert tiles["Cost avoided"] == "$0.0009"
+    assert tiles["Savings rate"] == "41%"  # 0.00087 / (0.00126 + 0.00087)
+    assert tiles["Risk gate approval"] == "50% (1/2)"
+    stages = at.dataframe[0].value
+    assert list(stages["stage"]) == ["Risk Analyst", "Compliance Officer"]
+    assert list(stages["llm_runs"]) == [2, 1]
+    statuses = dict(zip(at.dataframe[1].value["status"], at.dataframe[1].value["cases"],
+                        strict=True))
+    assert statuses == {"CLOSED_RISK_REJECTED": 1, "NEW": 1, "SAR_FILED": 1}
+
+
+# Phase 5 – Step 5.6: unpriced models → tokens counted, dollars not guessed, warning shown
+def test_metrics_page_unpriced(tmp_path, cases):
+    at = _metrics_session(tmp_path, cases, priced=False)
+    assert _tiles(at)["Cost avoided"] == "not measurable yet"
+    assert any("3 run(s) used a model with no price entry" in w.value for w in at.warning)

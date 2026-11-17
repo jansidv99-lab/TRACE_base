@@ -114,7 +114,7 @@ Plan: [`plan/05-streamlit-ui/plan.md`](plan/05-streamlit-ui/plan.md) — approve
 | 5.3 Risk review screen | ✅ | `app/views/risk_review.py` |
 | 5.4 Compliance review screen | ✅ | `app/views/compliance_review.py` |
 | 5.5 SAR & audit views | ✅ | `app/views/sars_audit.py`, `read_audit_events` |
-| 5.6 Metrics panel | ⏳ | `app/views/metrics.py` |
+| 5.6 Metrics panel | ✅ | `app/views/metrics.py` |
 | 5.7 UI tests | ⏳ | `tests/test_streamlit_app.py`, `tests/test_ui_helpers.py` |
 | 5.8 Manual walk-through | ⏳ | findings recorded here |
 

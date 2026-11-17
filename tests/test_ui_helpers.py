@@ -12,6 +12,7 @@ from app.ui_helpers import (
     estimate_risk_cost,
     five_ws_line,
     masked,
+    metric_tiles,
     narrative_report,
     next_new_cases,
     queue_rows,
@@ -20,9 +21,11 @@ from app.ui_helpers import (
     status_counts,
     trace_rows,
     transaction_rows,
+    unpriced_runs,
 )
 from src.foundation_sar import ComplianceOfficerOutput, RiskAnalystOutput
-from src.sar_workflow import CaseRecord, CaseStatus
+from src.metrics import WorkflowMetrics
+from src.sar_workflow import CaseRecord, CaseStatus, StageStats
 
 RISK = RiskAnalystOutput(classification="Fraud", confidence_score=0.7, risk_level="Medium",
                          reasoning="Step 1 ... Step 5", key_indicators=["x"])
@@ -221,3 +224,44 @@ def test_audit_rows():
     assert row["time"] == "2026-11-17 12:00:01"
     assert (row["actor"], row["reviewer"], row["tokens"]) == ("Human", "analyst_1", None)
     assert len(row["reasoning"]) == 120 and row["reasoning"].endswith("…")
+
+
+# ===========================================================================
+# Phase 5 – Step 5.6: metrics tiles
+# ===========================================================================
+def _run(prompt, completion, model="gpt-4o-mini-2024-07-18", latency_ms=10_000.0):
+    return StageStats(model=model, latency_ms=latency_ms, token_usage={
+        "prompt_tokens": prompt, "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    })
+
+
+# Phase 5 – Step 5.6: an empty session makes no savings claim
+def test_metric_tiles_empty():
+    tiles = metric_tiles(WorkflowMetrics(cases=3, status_counts={"NEW": 3}))
+    assert tiles["Cases processed"] == "0 / 3"
+    assert tiles["Cost avoided"] == "not measurable yet"
+    assert tiles["Savings rate"] == "—" and tiles["Risk gate approval"] == "—"
+
+
+# Phase 5 – Step 5.6: 1M in + 1M out on gpt-4o-mini = $0.75 per run (assumed prices)
+def test_metric_tiles_with_savings():
+    m = WorkflowMetrics(cases=3, status_counts={"CLOSED_RISK_REJECTED": 1, "NEW": 1,
+                                                "SAR_FILED": 1})
+    m.risk.add(_run(1_000_000, 1_000_000))
+    m.risk.add(_run(1_000_000, 1_000_000))
+    m.compliance.add(_run(1_000_000, 1_000_000, latency_ms=20_000.0))
+    m.risk_gate.approved, m.risk_gate.rejected = 1, 1
+    m.compliance_gate.approved = 1
+    tiles = metric_tiles(m)
+    assert tiles["Cases processed"] == "2 / 3"
+    assert tiles["SARs filed"] == "1"
+    assert tiles["Total cost (est.)"] == "$2.2500"
+    assert tiles["Cost avoided"] == "$0.7500"
+    assert tiles["Savings rate"] == "25%"  # 0.75 / (2.25 + 0.75)
+    assert tiles["Time avoided"] == "20 s"
+    assert tiles["Risk gate approval"] == "50% (1/2)"
+    assert tiles["Compliance gate approval"] == "100% (1/1)"
+    assert unpriced_runs(m) == 0
+    m.risk.add(_run(10, 10, model="mystery-model"))
+    assert unpriced_runs(m) == 1
