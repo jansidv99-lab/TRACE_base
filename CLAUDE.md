@@ -54,7 +54,7 @@ streamlit run app/streamlit_app.py           # Phase 5 review UI (http://localho
 `.env` keys: `OPENAI_API_KEY`, `OPENAI_BASE_URL` (OpenAI-compatible endpoint — pass it to the client,
 don't assume api.openai.com), `MODEL` (agents), `JUDGE_MODEL` (Phase 8 LLM-as-judge; must differ
 from `MODEL`; not in `.env` yet), `PROMPT_VERSION` (record it in audit logs), and
-`GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `REGION`, `GIT_REPO` for Phase 7 Cloud Run deployment.
+`GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `REGION`, `GIT_REPO` for Phase 6 Cloud Run deployment.
 
 ## Architecture
 

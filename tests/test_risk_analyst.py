@@ -13,7 +13,7 @@ from src import config
 from src.case_formatter import format_case_for_llm, unmask
 from src.foundation_sar import CaseData, DataLoader, ExplainabilityLogger, TransactionData
 from src.llm_utils import DEFAULT_SEED  # Phase 3 – Step 3.1: moved to shared module
-from src.prompts import load_prompt
+from src.prompts import PROMPTS_DIR, load_prompt
 from src.risk_analyst_agent import (
     NO_ACTIVITY_RESULT,
     RiskAnalysisError,
@@ -143,6 +143,15 @@ def test_prompt_contains_method_typologies_and_levels():
 def test_prompt_missing_version_lists_available():
     with pytest.raises(FileNotFoundError, match="Available"):
         load_prompt("risk_analyst", "V999")
+
+
+# Phase 6 – Step 6.1: the configured prompt version matches the file names with EXACT case.
+# Compares directory entries, so a "v1" vs "V1" mismatch fails here even on case-insensitive
+# Windows — not first on Linux CI or Cloud Run.
+@pytest.mark.parametrize("agent", ["risk_analyst", "compliance_officer"])
+def test_prompt_version_matches_file_case(agent):
+    files = {p.name for p in PROMPTS_DIR.glob("*.md")}
+    assert f"{agent}_{config.PROMPT_VERSION}.md" in files, (config.PROMPT_VERSION, sorted(files))
 
 
 # ===========================================================================

@@ -1,5 +1,5 @@
 # Phase 1 – Step 1.8: foundation tests — schemas, CaseData, audit logger and DataLoader
-"""Covers the "Foundation Tests" category in project_goal.md (Phase 6):
+"""Covers the "Foundation Tests" category in project_goal.md (Phase 7):
 schema validation, data loading, audit logging and graceful error handling.
 
 All tests run offline and write only into pytest's temporary `tmp_path` folders.

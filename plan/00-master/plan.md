@@ -53,7 +53,7 @@ TRACE_base/
 │   ├── 01_data_exploration.ipynb    # Phase 1
 │   └── 03_workflow_integration.ipynb# Phase 4
 ├── app/streamlit_app.py             # Phase 5
-├── tests/                           # grows every phase; consolidated in Phase 6
+├── tests/                           # grows every phase; consolidated in Phase 7
 ├── evals/                           # Phase 8
 ├── project_data/                    # provided CSVs (read-only)
 ├── logs/  outputs/                  # generated, git-ignored
@@ -61,8 +61,8 @@ TRACE_base/
 ├── pyproject.toml                   # ruff + pytest config
 ├── requirements.txt / requirements-dev.txt
 ├── .env.example
-├── Dockerfile                       # Phase 7
-└── .github/workflows/               # Phase 7
+├── Dockerfile                       # Phase 6
+└── .github/workflows/               # Phase 6
 ```
 
 ## 4. Cross-cutting conventions (apply in every phase)
@@ -164,28 +164,30 @@ confidence 0.0–1.0; risk level ∈ {Low, Medium, High, Critical}; key indicato
 
 ---
 
-### Stage 06 – Test Suite Consolidation  (`plan/06-testing/`, branch `test/consolidated-suite`)
-**Goal:** fill the gaps in the per-phase tests so the categories in `project_goal.md` are fully covered.
+### Stage 06 – CI/CD to GCP  (`plan/06-cicd-gcp/`, branches `chore/github-actions-ci`, `chore/cloudrun-deploy`)
+**Goal:** every PR is linted and tested automatically; `main` deploys the Streamlit app to Cloud Run.
+(Was Stage 07; moved ahead of test consolidation — developer decision 2026-11-17, decision 6.)
 
 | Step | Purpose | Output | Depends on |
 |---|---|---|---|
-| 6.1 Coverage review | Find gaps against the test categories in the goal | gap list | Stages 01–05 |
-| 6.2 Synthetic scenarios | One handcrafted case per crime type + edge cases (empty txns, malformed rows) | `tests/fixtures/` | 6.1 |
-| 6.3 Error-path tests | API failures, malformed JSON, validation failures | tests | 6.2 |
-| 6.4 Performance benchmarks | Response time / token budgets (opt-in `llm` marker) | benchmark tests | 6.2 |
-| 6.5 Run log | Structured per-run record (case, model, prompt version, scores, cost) feeding Phase 8 | run-log writer | 4.4 |
+| 6.1 CI workflow | `ruff check` + `pytest` on every PR | `.github/workflows/ci.yml` | Stages 01–05 |
+| 6.2 Dockerfile | Container for the Streamlit app | `Dockerfile`, `.dockerignore` | Stage 05 |
+| 6.3 GCP setup | Artifact Registry, Secret Manager (`OPENAI_API_KEY`), service account, Workload Identity Federation (keyless auth from GitHub) | documented `gcloud` commands (you run them) | – |
+| 6.4 CD workflow | Build → push → `gcloud run deploy` on merge to `main` | `.github/workflows/deploy.yml` | 6.1–6.3 |
 
 ---
 
-### Stage 07 – CI/CD to GCP  (`plan/07-cicd-gcp/`, branches `chore/github-actions-ci`, `chore/cloudrun-deploy`)
-**Goal:** every PR is linted and tested automatically; `main` deploys the Streamlit app to Cloud Run.
+### Stage 07 – Test Suite Consolidation  (`plan/07-testing/`, branch `test/consolidated-suite`)
+**Goal:** fill the gaps in the per-phase tests so the categories in `project_goal.md` are fully covered.
+(Was Stage 06; CI from Stage 06 runs these tests on every PR.)
 
 | Step | Purpose | Output | Depends on |
 |---|---|---|---|
-| 7.1 CI workflow | `ruff check` + `pytest` on every PR | `.github/workflows/ci.yml` | Stage 06 |
-| 7.2 Dockerfile | Container for the Streamlit app | `Dockerfile`, `.dockerignore` | Stage 05 |
-| 7.3 GCP setup | Artifact Registry, Secret Manager (`OPENAI_API_KEY`), service account, Workload Identity Federation (keyless auth from GitHub) | documented `gcloud` commands (you run them) | – |
-| 7.4 CD workflow | Build → push → `gcloud run deploy` on merge to `main` | `.github/workflows/deploy.yml` | 7.1–7.3 |
+| 7.1 Coverage review | Find gaps against the test categories in the goal | gap list | Stages 01–06 |
+| 7.2 Synthetic scenarios | One handcrafted case per crime type + edge cases (empty txns, malformed rows) | `tests/fixtures/` | 7.1 |
+| 7.3 Error-path tests | API failures, malformed JSON, validation failures | tests | 7.2 |
+| 7.4 Performance benchmarks | Response time / token budgets (opt-in `llm` marker) | benchmark tests | 7.2 |
+| 7.5 Run log | Structured per-run record (case, model, prompt version, scores, cost) feeding Phase 8 | run-log writer | 4.4 |
 
 ---
 
@@ -194,9 +196,9 @@ confidence 0.0–1.0; risk level ∈ {Low, Medium, High, Critical}; key indicato
 
 | Layer | Steps | Output | Depends on |
 |---|---|---|---|
-| **A – Deterministic tests** (minimal) | Already built in every phase; CI runs them | – | Stage 07 |
-| **B – Probabilistic evals** (main) | 8.1 Graders (rule-based: word count, 5 W's, citations; LLM-as-judge on `JUDGE_MODEL`: factual faithfulness to case data) → 8.2 eval harness over a labeled case set → 8.3 slice results (by crime type, risk level) → 8.4 feedback loop into prompt versions | `evals/` + reports | Stages 04, 06 |
-| **C – System metrics & drift** (main) | 8.5 Ship run log to Cloud Logging → BigQuery sink → 8.6 dashboard (Looker Studio) → 8.7 alerts on cost, latency, approval-rate or score drift | dashboards + alert policies | 6.5, Stage 07 |
+| **A – Deterministic tests** (minimal) | Already built in every phase; CI runs them | – | Stage 06 |
+| **B – Probabilistic evals** (main) | 8.1 Graders (rule-based: word count, 5 W's, citations; LLM-as-judge on `JUDGE_MODEL`: factual faithfulness to case data) → 8.2 eval harness over a labeled case set → 8.3 slice results (by crime type, risk level) → 8.4 feedback loop into prompt versions | `evals/` + reports | Stages 04, 07 |
+| **C – System metrics & drift** (main) | 8.5 Ship run log to Cloud Logging → BigQuery sink → 8.6 dashboard (Looker Studio) → 8.7 alerts on cost, latency, approval-rate or score drift | dashboards + alert policies | 7.5, Stage 06 |
 
 ---
 
@@ -204,12 +206,12 @@ confidence 0.0–1.0; risk level ∈ {Low, Medium, High, Critical}; key indicato
 
 ```
 01 Foundation ─→ 02 Risk Analyst ─→ 03 Compliance ─→ 04 Integration ─→ 05 UI
-                                                            │              │
-                                                            └──→ 06 Tests ←┘
-                                                                     │
-                                                              07 CI/CD (GCP)
-                                                                     │
-                                                              08 AI QA Framework
+                                                                           │
+                                                                    06 CI/CD (GCP)
+                                                                           │
+                                                                    07 Tests (run by CI)
+                                                                           │
+                                                                    08 AI QA Framework
 ```
 
 ## 7. Decisions (resolved in review, 2026-11-16)
@@ -221,10 +223,15 @@ confidence 0.0–1.0; risk level ∈ {Low, Medium, High, Critical}; key indicato
    and graded in 8.1.
 3. **Phase 8 inputs:** developer removed the "from Phase 4 / from Phase 6" wording in `project_goal.md`.
    The plan keeps its dependencies: graders (8.1) reuse the validators from 3.3 and metrics from 4.4,
-   and telemetry (8.5) ships the run log from 6.5.
+   and telemetry (8.5) ships the run log from 7.5 (was 6.5 before the decision 6 renumbering).
 4. **Judge model:** LLM-as-judge uses a different model from the agents, configured as `JUDGE_MODEL`
    in `.env` (value chosen when Stage 08 is planned).
 5. **Git config:** `pull.ff=only` and `fetch.prune=true` are now set in the local repo config.
+6. **Stage order (developer decision, 2026-11-17):** CI/CD moves ahead of test consolidation and
+   becomes **Stage 06**; test consolidation becomes **Stage 07** (its CI dependency is reversed:
+   CI runs the existing tests, and Stage 07 adds to them). Stage 05's walk-through (5.8) is
+   deferred to the deployed app. Renumbered by Claude in `project_goal.md`, this plan and
+   `project_status.md`.
 
 ## 8. Next step
 
