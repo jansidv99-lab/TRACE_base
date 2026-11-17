@@ -12,7 +12,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 03 – Compliance Officer agent | ✅ | `feature/compliance-officer-agent` · PR #5 merged |
 | 04 – Workflow integration & human gates | ✅ | `feature/sar-workflow` · PR #6 merged |
 | 05 – Streamlit UI | ✅ (5.8 deferred) | `feature/streamlit-review-ui` · PR #7 merged |
-| 06 – CI/CD to GCP | 🔄 in progress | `chore/github-actions-ci` (PR #8 merged), `chore/cloudrun-deploy` |
+| 06 – CI/CD to GCP | ✅ live on Cloud Run | `chore/github-actions-ci` (PR #8), `chore/cloudrun-deploy` (PR #9) merged |
 | 07 – Test suite consolidation | ⏳ | – |
 | 08 – AI QA framework | ⏳ | – |
 
@@ -128,7 +128,7 @@ compliance review 7 · SARs & audit 4 · metrics 3 · end-to-end journey with re
   real IDs on purpose (developer decision, 2026-11-17): it is the post-decision record an examiner
   reads, and the SAR file and audit log must hold the real IDs.
 
-## Stage 06 – CI/CD to GCP 🔄
+## Stage 06 – CI/CD to GCP ✅
 Was Stage 07 — moved ahead of test consolidation (developer decision 2026-11-17, master plan decision 6).
 Plan: [`plan/06-cicd-gcp/plan.md`](plan/06-cicd-gcp/plan.md) — approved with all recommendations (optional passcode gate, $5 budget alert, no `llm` tests in CI, `asia-south1`)
 Note (developer, `project_goal.md`): same GCP account, separate resources for this project.
@@ -136,9 +136,27 @@ Note (developer, `project_goal.md`): same GCP account, separate resources for th
 | Step | Status |
 |---|---|
 | 6.1 CI workflow (GitHub Actions) | ✅ (PR #8, green on GitHub) |
-| 6.2 Dockerfile + CD pipeline (`cd.yml`: build & smoke test) | 🔄 |
-| 6.3 GCP setup (Artifact Registry, Secret Manager, WIF) | 🔄 runbook `plan/06-cicd-gcp/gcp_setup.md` written; developer runs it |
-| 6.4 CD deploy job (Cloud Run) + optional passcode gate | 🔄 |
+| 6.2 Dockerfile + CD pipeline (`cd.yml`: build & smoke test) | ✅ (PR #9) |
+| 6.3 GCP setup (Artifact Registry, Secret Manager, WIF) | ✅ runbook `plan/06-cicd-gcp/gcp_setup.md`, run by the developer |
+| 6.4 CD deploy job (Cloud Run) + optional passcode gate | ✅ (PR #9) |
+| 6.5 Docs and first deploy | ✅ `CLAUDE.md` CI/CD section; live URL below |
+
+**Live service:** https://trace-sar-lxswvdduiq-el.a.run.app (public URL, passcode-gated; region
+`asia-south1`, max 1 instance, scale to zero). Deployed automatically by `cd.yml` after CI passes on
+`main`; image tag = commit SHA.
+
+**Known findings (Stage 06):**
+- CI on Linux caught a bug hidden on Windows: default `PROMPT_VERSION="v1"` vs files `*_V1.md`
+  (case-sensitive file names) → default fixed to `V1` + exact-case guard test (Step 6.1).
+- First deploy failed twice with *Permission denied on secret* (API key, then passcode): the
+  runtime account `trace-sar-run` lacked Secret Accessor — runbook block 4 had run without the
+  block 0 variables set. Fixed by re-granting; runbook blocks now stop early if variables are
+  missing (`${VAR:?…}` guards).
+- Keyless login (WIF, `main` only) and the Artifact Registry push worked first time.
+- Verified on the live URL (2026-11-17): health `ok`, pages HTTP 200 (~0.14 s), passcode gate shown
+  with nothing else loaded before a correct passcode.
+- Still open: audit log and SAR files are temporary on Cloud Run (lost on restart) until Stage 08;
+  the GCP budget does not cover LLM API spend (billed by the key provider).
 
 ## Stage 07 – Test suite consolidation ⏳
 Was Stage 06.
