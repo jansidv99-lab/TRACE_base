@@ -354,6 +354,12 @@ def test_process_runs_only_approved_cases(audit, sample_case, second_case):
         ("CUST_0002", "sar_generated"),  # Phase 4 – Step 4.4
         ("CUST_0003", "risk_gate_decision"),
     ]
+    # Phase 4 – Step 4.5: metrics straight from the workflow
+    m = wf.metrics()
+    assert m.status_counts == {"CLOSED_RISK_REJECTED": 1, "SAR_FILED": 1}
+    assert (m.risk.llm_runs, m.compliance.llm_runs, m.risk_gate.rejected) == (2, 1, 1)
+    assert m.compliance.total_tokens == 5200
+    assert m.cost_avoided_usd is None  # "fake-model" has no price: tokens counted, $ not guessed
 
 
 # Phase 4 – Step 4.3: failed cases skip the gates entirely

@@ -45,6 +45,7 @@ from src.foundation_sar import (
     TransactionData,
     count_words,
 )
+from src.metrics import WorkflowMetrics, summarize
 from src.risk_analyst_agent import RiskAnalysisError
 
 
@@ -297,6 +298,10 @@ class SARWorkflow:
                 )
             records.append(record)
         return records
+
+    # Phase 4 – Step 4.5: efficiency summary for every case in this workflow
+    def metrics(self) -> WorkflowMetrics:
+        return summarize(self.records.values())
 
     # Phase 4 – Step 4.3: a decision must be for this gate, and the case must be waiting at it
     def _check_gate(
