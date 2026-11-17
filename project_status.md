@@ -1,6 +1,6 @@
 # Project Status – TRACE SAR System
 
-Last updated: 2026-11-16 · Master plan: [`plan/00-master/plan.md`](plan/00-master/plan.md)
+Last updated: 2026-11-17 · Master plan: [`plan/00-master/plan.md`](plan/00-master/plan.md)
 
 Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 
@@ -68,7 +68,7 @@ Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-ag
 | 3.4 ReACT system prompt | ✅ | `src/prompts/compliance_officer_V1.md` (~1,030 tokens) |
 | 3.5 Tools: schemas + executor | ✅ | `src/compliance_tools.py` (4 tools, error observations instead of crashes) |
 | 3.6 ComplianceOfficerAgent ReACT loop | ✅ | `src/compliance_officer_agent.py` (live: 6 steps, accepted 95-word narrative) |
-| 3.7 Audit integration | ⏳ | ReACT trace in audit log |
+| 3.7 Audit integration | ✅ | one audit event per call with summarised ReACT trace + validation report |
 | 3.8 Tests | ⏳ | `tests/test_compliance_officer.py` |
 | 3.9 Demo notebook | ⏳ | `notebooks/03_compliance_officer_demo.ipynb` |
 

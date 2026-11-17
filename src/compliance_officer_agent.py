@@ -99,12 +99,69 @@ class ComplianceOfficerAgent:
         if not self.model:
             raise ValueError("No model configured: set MODEL in .env or pass model=...")
 
-    # Phase 3 – Step 3.6: public entry point (Step 3.7 adds the audit event around it)
+    # Phase 3 – Step 3.6: public entry point
+    # Phase 3 – Step 3.7: ALWAYS writes exactly one audit event (success or failure)
     def generate_compliance_narrative(
         self, case: CaseData, risk_output: RiskAnalystOutput
     ) -> ComplianceOfficerOutput:
-        """Return a validated ComplianceOfficerOutput, or raise ComplianceError."""
-        return self._generate(case, risk_output)
+        """Return a validated ComplianceOfficerOutput, or raise ComplianceError.
+
+        Exactly one audit event is written per call, including the ReACT trace.
+        """
+        try:
+            result = self._generate(case, risk_output)
+        except ComplianceError as exc:
+            self._log(case, risk_output, result=None, error=exc.reason)
+            raise
+        self._log(case, risk_output, result=result, error=None)
+        return result
+
+    # Phase 3 – Step 3.7: one audit record an examiner can use to replay how the narrative was built
+    def _log(
+        self,
+        case: CaseData,
+        risk_output: RiskAnalystOutput,
+        result: ComplianceOfficerOutput | None,
+        error: str | None,
+    ) -> None:
+        run = self.last_run or NarrativeRun(case_id=case.case_id)
+        txns = case.transactions
+        self.logger.log_agent_action(
+            agent_type="ComplianceOfficer",
+            action="generate_narrative",
+            case_id=case.case_id,
+            # A summary, not the full prompt: it is reproducible from case + risk output + version
+            input_data={
+                "customer_id": case.customer.customer_id,
+                "accounts": len(case.accounts),
+                "transactions": len(txns),
+                "period": [str(txns[0].transaction_date), str(txns[-1].transaction_date)]
+                if txns
+                else None,
+                "risk_classification": risk_output.classification,
+                "risk_level": risk_output.risk_level,
+                "risk_confidence": risk_output.confidence_score,
+            },
+            output_data=result,
+            reasoning=result.narrative_reasoning
+            if result
+            else f"Narrative generation failed: {error}",
+            execution_time_ms=run.latency_ms,
+            success=error is None,
+            error_message=error,
+            prompt_version=self.prompt_version,
+            requested_model=self.model,
+            model=run.model,
+            temperature=self.temperature,
+            seed=self.seed,
+            system_fingerprint=run.system_fingerprint,
+            token_usage=run.token_usage,
+            attempts=run.attempts,
+            steps=run.steps,
+            max_steps=self.max_steps,
+            react_trace=[_audit_step(s) for s in run.trace],
+            validation_report=run.report,
+        )
 
     # Phase 3 – Step 3.6: the ReACT loop
     def _generate(self, case: CaseData, risk_output: RiskAnalystOutput) -> ComplianceOfficerOutput:
@@ -214,6 +271,45 @@ def _assistant_entry(message: Any, tool_calls: list[Any]) -> dict[str, Any]:
             for c in tool_calls
         ]
     return entry
+
+
+# Phase 3 – Step 3.7: one trace step for the audit log — full action + arguments, short observation
+def _audit_step(step: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step": step.get("step"),
+        "thought": step.get("thought"),
+        "action": step.get("action"),
+        "arguments": step.get("arguments"),
+        "observation": _observation_summary(step.get("action"), step.get("observation")),
+    }
+
+
+# Phase 3 – Step 3.7: shorten a tool observation; tools are deterministic, so the full text
+# can be rebuilt from the case data + the logged arguments
+def _observation_summary(action: str | None, observation: Any) -> Any:
+    if not isinstance(observation, dict):
+        return observation  # e.g. "no tool call"
+    if "error" in observation:
+        return {"error": observation["error"]}
+    if action == "get_transaction_details":
+        summary: dict[str, Any] = {
+            "found": [t.get("ref") for t in observation.get("transactions", [])]
+        }
+        if observation.get("unknown_refs"):
+            summary["unknown_refs"] = observation["unknown_refs"]
+        return summary
+    if action == "lookup_regulations":
+        summary = {
+            "typology": observation.get("typology"),
+            "citations": [c.get("citation") for c in observation.get("citations", [])],
+        }
+        if "note" in observation:
+            summary["note"] = observation["note"]
+        return summary
+    if action in ("check_narrative", "submit_narrative"):
+        keys = ("accepted", "passed", "word_count", "errors", "warnings")
+        return {k: observation[k] for k in keys if k in observation}
+    return observation
 
 
 # Phase 3 – Step 3.6: tool arguments as data for the trace (raw text if not valid JSON)
