@@ -79,7 +79,7 @@ this session's running cost.
 
 ### Step 5.1 – Setup and app shell
 - **Purpose:** a running app skeleton with the workflow wired in.
-- **Output:** `streamlit` pinned in `requirements.txt` (runtime: Stage 07 deploys this app);
+- **Output:** `streamlit` pinned in `requirements.txt` (runtime: Stage 06 deploys this app);
   `.streamlit/config.toml`; `app/streamlit_app.py` with `st.navigation` and the sidebar;
   `app/state.py` (`get_workflow`, cached client and cases, reviewer-ID helper); one AppTest smoke test.
 - **Depends on:** Stage 04
@@ -153,9 +153,9 @@ CLAUDE.md                      (replace "entry point TBD" with the real command)
 ## 7. Decisions (resolved in review, 2026-11-17 — all recommendations accepted)
 
 1. **Workflow state:** browser session only (`st.session_state`); audit log and SAR files persist on
-   disk. Durable shared state is a Stage 07 topic.
+   disk. Durable shared state is a later topic (Stage 06 deploy / Stage 08).
 2. **Segregation of duties:** enforced in `SARWorkflow.record_compliance_decision` — the compliance
    reviewer ID must differ from the risk reviewer ID (applies to UI, notebooks and tests).
 3. **Batch analysis:** "analyze next N" with N ≤ 10 and the estimated cost shown first.
-4. **Reviewer identity:** free-text reviewer ID in the sidebar, no login until Stage 07.
+4. **Reviewer identity:** free-text reviewer ID in the sidebar, no login until Stage 06 (CI/CD) or later.
 5. **Steps:** setup (5.1), UI tests (5.7) and a manual walk-through (5.8) added to the five screens.

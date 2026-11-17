@@ -2,7 +2,7 @@
 """Project settings.
 
 Values come from environment variables, with `.env` (repo root) loaded first if it exists.
-Real environment variables win over `.env`, which is what Cloud Run will rely on in Stage 07.
+Real environment variables win over `.env`, which is what Cloud Run will rely on in Stage 06.
 Missing LLM settings are allowed here: nothing in Stage 01 calls the LLM.
 """
 

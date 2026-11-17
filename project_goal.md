@@ -133,7 +133,15 @@
   ### Phase 5: UI design
     - use Streamlit for the UI design
 
-  ### Phase 6:Test Categories Breakdown
+  ### Phase 6 : CI/CD pipelines to GCP
+    (renumbered by Claude per developer decision 2026-11-17: CI/CD now comes before test consolidation)
+    - github actions for the CI pipeliens
+    - cloudrun for the deployment
+    - use the same GCP account , but create seperate resources for this project
+
+
+  ### Phase 7: Test Categories Breakdown
+    (renumbered by Claude per developer decision 2026-11-17: CI/CD now comes before test consolidation)
   
     **Foundation Tests (`test_foundation.py`):**
       - **Schema Validation**: Verify Pydantic models work with real CSV data
@@ -165,12 +173,6 @@
     - **Real Data Validation**: Tests using the provided CSV datasets
     - **Edge Case Coverage**: Malformed inputs, missing data, API failures
     - **Performance Benchmarks**: Response time and accuracy metrics
-
-  ### Phase 7 : CI/CD pipelines to GCP
-    - github actions for the CI pipeliens
-    - cloudrun for the deployment
-    - use the same GCP account , but create seperate resources for this project
-
 
   ### Phase 8 : AI QA Framework 
   Where each AI QA layer lives
