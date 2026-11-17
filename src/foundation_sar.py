@@ -286,9 +286,146 @@ class ComplianceOfficerOutput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 – Step 4.1: human gate decisions and the final SAR document
+# ---------------------------------------------------------------------------
+GateName = Literal["risk", "compliance"]
+GateDecision = Literal["approve", "reject"]
+# Phase 4 – Step 4.1: e.g. SAR_CUST_0137_20261117120000 (customer + UTC generation time)
+SAR_ID_PATTERN = r"^SAR_CUST_\d{4}_\d{14}$"
+
+
+# Phase 4 – Step 4.1: shared rule — audit and filing timestamps must carry a timezone (UTC)
+def _require_timezone(value: datetime, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware (use UTC)")
+    return value
+
+
+# Phase 4 – Step 4.1: one reviewer's decision at one gate (approvals AND rejections are audited)
+class HumanDecision(BaseModel):
+    """What a human reviewer decided at the risk gate or the compliance gate.
+
+    A gate is data, not a prompt: the workflow receives this object from a notebook, the Streamlit
+    UI or a test, so the same logic works everywhere.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    gate: GateName
+    decision: GateDecision
+    reviewer_id: NonEmptyStr
+    reason: str | None = None
+    decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    # Phase 4 – Step 4.1: timestamps in the audit trail are always timezone-aware
+    @field_validator("decided_at")
+    @classmethod
+    def _timezone_aware(cls, value: datetime) -> datetime:
+        return _require_timezone(value, "decided_at")
+
+    # Phase 4 – Step 4.1: a rejection must say why (examiners will ask); blank reasons become None
+    @model_validator(mode="after")
+    def _reject_needs_reason(self) -> "HumanDecision":
+        if self.reason is not None and not self.reason:
+            self.reason = None
+        if self.decision == "reject" and self.reason is None:
+            raise ValueError("a rejection must include a reason")
+        return self
+
+
+# Phase 4 – Step 4.1: the suspicious-activity section of the SAR
+class SuspiciousActivity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    typology: SuspiciousActivityType
+    risk_level: RiskLevel
+    confidence_score: float = Field(ge=0.0, le=1.0)
+    start_date: date
+    end_date: date
+    total_amount: float = Field(ge=0)
+    # Real IDs only: a masked ref such as T001 must never reach a filing
+    transaction_ids: list[Annotated[str, Field(pattern=TRANSACTION_ID_PATTERN)]] = Field(
+        min_length=1
+    )
+
+    # Phase 4 – Step 4.1: the activity period cannot end before it starts
+    @model_validator(mode="after")
+    def _dates_in_order(self) -> "SuspiciousActivity":
+        if self.end_date < self.start_date:
+            raise ValueError(f"end_date {self.end_date} is before start_date {self.start_date}")
+        return self
+
+
+# Phase 4 – Step 4.1: which models and prompt versions produced the SAR (reproducibility)
+class SARProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    risk_model: str | None = None
+    risk_prompt_version: str | None = None
+    compliance_model: str | None = None
+    compliance_prompt_version: str | None = None
+
+
+# Phase 4 – Step 4.1: the regulatory deliverable — written as JSON to outputs/sars/
+class SARDocument(BaseModel):
+    """A complete Suspicious Activity Report for one case, approved at both human gates.
+
+    The subject carries full customer details (name, DOB, address, phone, ssn_last_4) because a SAR
+    filing needs them (Stage 04 decision 2). The file lives under git-ignored `outputs/`; the audit
+    log stays redacted. Audit events link to this SAR through `case_id`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sar_id: str = Field(pattern=SAR_ID_PATTERN)
+    generated_at: datetime
+    case_id: str = Field(pattern=CASE_ID_PATTERN)
+    subject: CustomerData
+    accounts: list[AccountData] = Field(min_length=1)
+    activity: SuspiciousActivity
+    narrative: ComplianceOfficerOutput
+    risk_review: HumanDecision
+    compliance_review: HumanDecision
+    provenance: SARProvenance = Field(default_factory=SARProvenance)
+
+    # Phase 4 – Step 4.1: filing time must be timezone-aware
+    @field_validator("generated_at")
+    @classmethod
+    def _timezone_aware(cls, value: datetime) -> datetime:
+        return _require_timezone(value, "generated_at")
+
+    # Phase 4 – Step 4.1: case, SAR and subject must all name the same customer
+    @model_validator(mode="after")
+    def _ids_consistent(self) -> "SARDocument":
+        customer_id = self.subject.customer_id
+        if not self.case_id.startswith(f"CASE_{customer_id}_"):
+            raise ValueError(f"case_id {self.case_id} does not match subject {customer_id}")
+        if not self.sar_id.startswith(f"SAR_{customer_id}_"):
+            raise ValueError(f"sar_id {self.sar_id} does not match subject {customer_id}")
+        return self
+
+    # Phase 4 – Step 4.1: a SAR exists only if BOTH gates approved, each on its own gate
+    @model_validator(mode="after")
+    def _both_gates_approved(self) -> "SARDocument":
+        for field_name, gate in (("risk_review", "risk"), ("compliance_review", "compliance")):
+            review: HumanDecision = getattr(self, field_name)
+            if review.gate != gate:
+                raise ValueError(
+                    f"{field_name} must be a '{gate}' gate decision, got '{review.gate}'"
+                )
+            if review.decision != "approve":
+                raise ValueError(
+                    f"{field_name} is not an approval; a SAR needs both gates approved"
+                )
+        return self
+
+
+# ---------------------------------------------------------------------------
 # Phase 1 – Step 1.6: audit logging
 # ---------------------------------------------------------------------------
-AgentType = Literal["DataLoader", "RiskAnalyst", "ComplianceOfficer", "Human"]
+# Phase 4 – Step 4.1: "Workflow" added for events that are neither an agent nor a human
+# (e.g. sar_generated, routed_to_manual_review)
+AgentType = Literal["DataLoader", "RiskAnalyst", "ComplianceOfficer", "Human", "Workflow"]
 
 # Phase 1 – Step 1.6: personal data that must never reach the audit log (master plan rule 6)
 PII_FIELDS = frozenset({"ssn_last_4", "date_of_birth", "address", "phone"})

@@ -7,7 +7,7 @@ All tests run offline and write only into pytest's temporary `tmp_path` folders.
 
 import json
 import shutil
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -22,7 +22,9 @@ from src.foundation_sar import (
     CustomerData,
     DataLoader,
     ExplainabilityLogger,
+    HumanDecision,
     RiskAnalystOutput,
+    SARDocument,
     TransactionData,
     count_words,
 )
@@ -297,6 +299,108 @@ def test_narrative_word_limit(words, ok):
 def test_compliance_output_rejects_bad_values(field, value):
     with pytest.raises(ValidationError):
         ComplianceOfficerOutput(**{**VALID_COMPLIANCE, field: value})
+
+
+# ===========================================================================
+# Phase 4 – Step 4.1: human gate decisions and the SAR document
+# ===========================================================================
+
+
+# Phase 4 – Step 4.1: an approval needs no reason; blank reasons are stored as None
+def test_human_decision_approve():
+    d = HumanDecision(gate="risk", decision="approve", reviewer_id=" analyst_1 ", reason="  ")
+    assert d.reviewer_id == "analyst_1"
+    assert d.reason is None
+    assert d.decided_at.tzinfo is not None
+
+
+# Phase 4 – Step 4.1: a rejection must say why
+@pytest.mark.parametrize("reason", [None, "", "   "])
+def test_human_decision_reject_needs_reason(reason):
+    with pytest.raises(ValidationError, match="must include a reason"):
+        HumanDecision(gate="risk", decision="reject", reviewer_id="a1", reason=reason)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("gate", "final"), ("decision", "maybe"), ("reviewer_id", " "),
+     ("decided_at", datetime(2026, 11, 17, 12, 0))],  # naive datetime
+)
+def test_human_decision_rejects_bad_values(field, value):
+    data = {"gate": "risk", "decision": "approve", "reviewer_id": "a1", field: value}
+    with pytest.raises(ValidationError):
+        HumanDecision(**data)
+
+
+# Phase 4 – Step 4.1: a complete, valid SAR as a dict, built from the conftest sample case
+@pytest.fixture
+def sar_data(sample_case) -> dict:
+    return {
+        "sar_id": "SAR_CUST_0002_20261117120000",
+        "generated_at": datetime(2026, 11, 17, 12, 0, tzinfo=UTC),
+        "case_id": sample_case.case_id,
+        "subject": sample_case.customer,
+        "accounts": sample_case.accounts,
+        "activity": {
+            "typology": "Structuring",
+            "risk_level": "High",
+            "confidence_score": 0.87,
+            "start_date": "2025-02-18",
+            "end_date": "2025-02-18",
+            "total_amount": 1615.06,
+            "transaction_ids": ["TXN_B24455F3"],
+        },
+        "narrative": VALID_COMPLIANCE,
+        "risk_review": {"gate": "risk", "decision": "approve", "reviewer_id": "analyst_1"},
+        "compliance_review": {"gate": "compliance", "decision": "approve",
+                              "reviewer_id": "officer_1"},
+        "provenance": {"risk_model": "gpt-4o-mini", "risk_prompt_version": "V1"},
+    }
+
+
+def test_sar_document_valid(sar_data):
+    sar = SARDocument(**sar_data)
+    dumped = json.loads(sar.model_dump_json())
+    assert dumped["subject"]["name"] == "Renee Blair"     # full subject details in the filing
+    assert dumped["activity"]["transaction_ids"] == ["TXN_B24455F3"]
+    assert dumped["compliance_review"]["gate"] == "compliance"
+
+
+# Phase 4 – Step 4.1: every rule that keeps an invalid SAR from being written
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"risk_review": {"gate": "risk", "decision": "reject", "reviewer_id": "a1",
+                          "reason": "false positive"}}, "not an approval"),
+        ({"compliance_review": {"gate": "risk", "decision": "approve", "reviewer_id": "o1"}},
+         "must be a 'compliance' gate decision"),
+        ({"activity_dates": ("2025-03-01", "2025-02-01")}, "before start_date"),
+        ({"activity_ids": ["T001"]}, "transaction_ids"),
+        ({"activity_ids": []}, "transaction_ids"),
+        ({"sar_id": "SAR-0002"}, "sar_id"),
+        ({"sar_id": "SAR_CUST_0999_20261117120000"}, "does not match subject"),
+        ({"generated_at": datetime(2026, 11, 17, 12, 0)}, "timezone-aware"),
+    ],
+    ids=["rejected-review", "wrong-gate", "dates-reversed", "masked-id", "no-ids", "bad-sar-id",
+         "other-customer", "naive-time"],
+)
+def test_sar_document_rejects_invalid(sar_data, change, message):
+    data = {**sar_data, "activity": dict(sar_data["activity"])}
+    if "activity_dates" in change:
+        data["activity"]["start_date"], data["activity"]["end_date"] = change.pop("activity_dates")
+    if "activity_ids" in change:
+        data["activity"]["transaction_ids"] = change.pop("activity_ids")
+    data.update(change)
+    with pytest.raises(ValidationError, match=message):
+        SARDocument(**data)
+
+
+# Phase 4 – Step 4.1: the audit logger accepts the new "Workflow" actor
+def test_logger_accepts_workflow_actor(tmp_path):
+    rec = ExplainabilityLogger(tmp_path / "a.jsonl").log_agent_action(
+        "Workflow", "sar_generated", None, None, None, "r", 0
+    )
+    assert rec["agent_type"] == "Workflow"
 
 
 # ===========================================================================
