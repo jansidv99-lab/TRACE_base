@@ -15,6 +15,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 06 – CI/CD to GCP | ✅ live on Cloud Run | `chore/github-actions-ci` (PR #8), `chore/cloudrun-deploy` (PR #9) merged |
 | 07 – Test suite consolidation | ⏳ | – |
 | 08 – AI QA framework | ⏳ | – |
+| 09 – Walk-through fixes (done before 07) | 🔄 in progress | `fix/walkthrough-findings` |
 
 ---
 
@@ -151,7 +152,7 @@ compliance review 7 · SARs & audit 4 · metrics 3 · end-to-end journey with re
 - Lesson: the CD health check proves the web server starts, not that the LLM settings are valid →
   fix list item 1.
 
-**Fix list (proposed, for review before Stage 07):**
+**Fix list (developer decision 2026-11-17: all items, before Stage 07 → Stage 09):**
 1. `cd.yml`: pre-deploy check that fails if a required variable is empty, still contains `<…>`
    placeholder text, or `OPENAI_BASE_URL` does not start with `https://`.
 2. Runbook block 8: read values from `.env` (quotes stripped) instead of placeholders to fill in.
@@ -162,6 +163,9 @@ compliance review 7 · SARs & audit 4 · metrics 3 · end-to-end journey with re
    records why a case was escalated, not only why one was dropped.
 6. Risk calibration (carry to `V2` prompt / Stage 08 evals): CUST_0003 is a repeat false positive
    — ordinary payments ranked as Money_Laundering; compare activity to balances, not only income.
+7. CD: deploy only when the image inputs changed — the docs-only walk-through merge redeployed
+   the app (the `workflow_run` trigger has no path filter), ending sessions and wiping temporary
+   files. (Added after the fix list, developer decision 2026-11-17.)
 
 **Decisions (Stage 05):**
 - Review screens (queue, risk review, compliance review) never show real transaction IDs: the
@@ -209,6 +213,17 @@ Was Stage 06.
 | 7.3 Error-path tests | ⏳ |
 | 7.4 Performance benchmarks | ⏳ |
 | 7.5 Run log | ⏳ |
+
+## Stage 09 – Walk-through fixes 🔄
+Plan: [`plan/09-walkthrough-fixes/plan.md`](plan/09-walkthrough-fixes/plan.md) — approved with all recommendations (reason required at both gates, declared `transaction_refs`, one switch to `V2`, V1-vs-V2 comparison before merging, CI as the code check). Numbered 09 (next free folder) but done **before** Stage 07.
+
+| Step | Fixes | Status |
+|---|---|---|
+| 9.1 Small fixes: CD variable check, runbook block 8 from `.env`, `*.stackdump`, deploy only on image changes | #1 #2 #3 #7 | ⏳ |
+| 9.2 Reason required at both gates | #5 | ⏳ |
+| 9.3 Compliance prompt V2 + declared supporting transactions | #4 | ⏳ |
+| 9.4 Risk prompt V2 (calibration) + V1-vs-V2 comparison | #6 | ⏳ |
+| 9.5 Ship and verify (`PROMPT_VERSION=V2`, live spot-check) | – | ⏳ |
 
 ## Stage 08 – AI QA framework ⏳
 | Step | Status |
