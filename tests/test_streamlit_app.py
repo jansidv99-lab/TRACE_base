@@ -1,22 +1,37 @@
 # Phase 5 – Step 5.1: Streamlit UI tests — headless AppTest with stub agents (no browser, no API)
-"""`AppTest` runs the real app script without a browser. A workflow with stub agents is put into
-session state before the first run, so `app.state.get_workflow()` uses it instead of building the
-real agents. Step 5.7 extends this file with tests for every screen.
+"""`AppTest` runs the real app script without a browser. A workflow is put into session state
+before the first run, so `app.state.get_workflow()` uses it instead of building the real agents.
+
+- Steps 5.1–5.6: one block per screen, with stub agents (fast, exact).
+- Step 5.7: one end-to-end journey with the REAL agents on FakeLLMClient across every screen.
 """
 
+import re
 from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from src.compliance_officer_agent import ComplianceOfficerAgent
 from src.foundation_sar import (
     ComplianceOfficerOutput,
     ExplainabilityLogger,
     HumanDecision,
+    TransactionData,
     count_words,
 )
+from src.risk_analyst_agent import RiskAnalystAgent
 from src.sar_workflow import SARWorkflow
-from tests.test_workflow import StubComplianceAgent, StubRiskAgent
+from tests.fakes import FakeLLMClient
+from tests.test_workflow import (
+    E2E_NARRATIVE,
+    PRICED_MODEL,
+    TXN_IDS,
+    StubComplianceAgent,
+    StubRiskAgent,
+    _react_script,
+    _risk_reply,
+)
 
 # AppTest resolves relative paths against this test file, so use an absolute path
 APP = str(Path(__file__).resolve().parent.parent / "app" / "streamlit_app.py")
@@ -479,3 +494,120 @@ def test_metrics_page_unpriced(tmp_path, cases):
     at = _metrics_session(tmp_path, cases, priced=False)
     assert _tiles(at)["Cost avoided"] == "not measurable yet"
     assert any("3 run(s) used a model with no price entry" in w.value for w in at.warning)
+
+
+# ===========================================================================
+# Phase 5 – Step 5.7: end-to-end UI journey — REAL agents on FakeLLMClient, one session
+# ===========================================================================
+# Planted answer-key prefixes; the review screens must never show one
+PLANTED_ID = re.compile(r"\b(STRUCT|LARGE|RAPID|GEO|FREQ)_[0-9A-F]{8}\b")
+
+
+# Phase 5 – Step 5.7: everything a reviewer can read on the current page (main area)
+def _screen_text(at) -> str:
+    parts = [m.value for m in at.markdown] + [c.value for c in at.caption]
+    for kind in (at.success, at.info, at.warning, at.error):
+        parts += [e.value for e in kind]
+    parts += [str(m.value) for m in at.main.metric]
+    parts += [d.value.to_string() for d in at.dataframe]
+    return "\n".join(parts)
+
+
+# Phase 5 – Step 5.7: case A = three planted STRUCT_ deposits (Stage 04 e2e case), case B = clean
+@pytest.fixture
+def journey(tmp_path, cases, transaction_row):
+    days = [("2025-03-03", "9800.00"), ("2025-03-05", "9500.00"), ("2025-03-07", "9900.00")]
+    structuring = cases[0].model_copy(update={"transactions": [
+        TransactionData(**{**transaction_row, "transaction_id": tid, "transaction_date": day,
+                           "amount": amount, "transaction_type": "Cash_Deposit",
+                           "method": "Cash"})
+        for tid, (day, amount) in zip(TXN_IDS, days, strict=True)
+    ]})
+    clean = cases[1]
+    logger = ExplainabilityLogger(tmp_path / "audit.jsonl")
+    risk_client = FakeLLMClient([
+        _risk_reply(),
+        _risk_reply(classification="Other", risk_level="Low", confidence_score=0.8,
+                    key_indicators=["T001 is consistent with the profile"],
+                    reasoning="Step 1: profile. Step 2: T001 only. Step 3: none. Step 4: Other. "
+                              "Step 5: Low."),
+    ])
+    compliance_client = FakeLLMClient(_react_script())
+    workflow = SARWorkflow(
+        RiskAnalystAgent(risk_client, logger, model=PRICED_MODEL, sleep=lambda _s: None),
+        ComplianceOfficerAgent(compliance_client, logger, model=PRICED_MODEL,
+                               sleep=lambda _s: None),
+        logger, output_dir=tmp_path / "outputs",
+    )
+    for case in (structuring, clean):
+        workflow.add_case(case)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["workflow"] = workflow
+    at.session_state["reviewer_id"] = "analyst_1"
+    return at, workflow, structuring, clean, risk_client, compliance_client
+
+
+def test_ui_journey_end_to_end(journey):
+    at, wf, structuring, clean, risk_client, compliance_client = journey
+    a, b = structuring.case_id, clean.case_id
+
+    # 1. Case queue: analyze both cases in one batch
+    at.run()
+    at.number_input(key="batch_n").set_value(2).run()
+    at.button(key="analyze_batch").click().run()
+    assert not at.exception
+    assert (wf.get(a).status, wf.get(b).status) == ("RISK_REVIEW", "RISK_REVIEW")
+    assert len(risk_client.calls) == 2
+    assert not PLANTED_ID.search(_screen_text(at))
+
+    # 2. Risk review: approve the structuring finding (masked evidence, cited rows) ...
+    at.switch_page("views/risk_review.py").run()
+    at.selectbox(key="risk_case").select(a).run()
+    screen = _screen_text(at)
+    assert not PLANTED_ID.search(screen)
+    assert "T001 and T002 are cash deposits just under $10,000" in screen
+    assert list(at.dataframe[-1].value["cited"]) == [True, True, True]
+    _submit_risk(at, "approve")
+    # ... and reject the clean customer with a reason (the Stage 04 false-positive lesson)
+    at.selectbox(key="risk_case").select(b).run()
+    _submit_risk(at, "reject", "activity consistent with profile")
+    assert (wf.get(a).status, wf.get(b).status) == ("RISK_APPROVED", "CLOSED_RISK_REJECTED")
+
+    # 3. Compliance review: a different reviewer generates and approves the narrative
+    at.sidebar.text_input[0].input("officer_1").run()
+    at.switch_page("views/compliance_review.py").run()
+    at.button(key="narrate").click().run()
+    assert wf.get(a).status == "COMPLIANCE_REVIEW"
+    assert len(compliance_client.calls) == 3  # the rejected case cost no Stage 2 calls
+    screen = _screen_text(at)
+    assert not PLANTED_ID.search(screen)
+    assert E2E_NARRATIVE in screen
+    assert [m.value for m in at.main.metric][1] == "passed"
+    assert list(at.dataframe[0].value["action"]) == [
+        "get_transaction_details", "lookup_regulations", "submit_narrative",
+    ]
+    _submit_compliance(at, "approve")
+    assert wf.get(a).status == "SAR_FILED"
+
+    # 4. SARs & audit: SAR with download; the full, ordered audit trail for case A
+    at.switch_page("views/sars_audit.py").run()
+    assert at.get("download_button")[0].proto.label == "Download SAR (JSON)"
+    at.selectbox(key="audit_case").select(a).run()
+    trail = at.dataframe[-1].value
+    assert list(zip(trail["actor"], trail["action"], strict=True)) == [
+        ("RiskAnalyst", "analyze_case"),
+        ("Human", "risk_gate_decision"),
+        ("ComplianceOfficer", "generate_narrative"),
+        ("Human", "compliance_gate_decision"),
+        ("Workflow", "sar_generated"),
+    ]
+    assert list(trail["reviewer"])[1::2] == ["analyst_1", "officer_1"]
+
+    # 5. Metrics: one rejection × the measured narrative cost (fake replies: 100 in / 20 out)
+    at.switch_page("views/metrics.py").run()
+    tiles = {m.label: m.value for m in at.main.metric}
+    per_call = 100 / 1e6 * 0.15 + 20 / 1e6 * 0.60
+    assert tiles["SARs filed"] == "1"
+    assert tiles["Cost avoided"] == f"${3 * per_call:.4f}"
+    assert tiles["Risk gate approval"] == "50% (1/2)"
+    assert tiles["Compliance gate approval"] == "100% (1/1)"

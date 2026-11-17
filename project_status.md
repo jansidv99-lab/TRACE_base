@@ -115,8 +115,18 @@ Plan: [`plan/05-streamlit-ui/plan.md`](plan/05-streamlit-ui/plan.md) — approve
 | 5.4 Compliance review screen | ✅ | `app/views/compliance_review.py` |
 | 5.5 SAR & audit views | ✅ | `app/views/sars_audit.py`, `read_audit_events` |
 | 5.6 Metrics panel | ✅ | `app/views/metrics.py` |
-| 5.7 UI tests | ⏳ | `tests/test_streamlit_app.py`, `tests/test_ui_helpers.py` |
+| 5.7 UI tests | ✅ | `tests/test_streamlit_app.py`, `tests/test_ui_helpers.py` (50 tests, see map below) |
 | 5.8 Manual walk-through | ⏳ | findings recorded here |
+
+**UI test coverage map (Step 5.7, 50 tests):** app shell 7 · case queue 6 · risk review 6 ·
+compliance review 7 · SARs & audit 4 · metrics 3 · end-to-end journey with real agents on
+`FakeLLMClient` 1 · pure helpers (`app/ui_helpers.py`) 16.
+
+**Decisions (Stage 05):**
+- Review screens (queue, risk review, compliance review) never show real transaction IDs: the
+  journey test fails on any planted prefix (`STRUCT_`, `LARGE_`, …). The **SARs & audit** page keeps
+  real IDs on purpose (developer decision, 2026-11-17): it is the post-decision record an examiner
+  reads, and the SAR file and audit log must hold the real IDs.
 
 ## Stage 06 – Test suite consolidation ⏳
 | Step | Status |
