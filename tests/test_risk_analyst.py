@@ -12,15 +12,12 @@ import pytest
 from src import config
 from src.case_formatter import format_case_for_llm, unmask
 from src.foundation_sar import CaseData, DataLoader, ExplainabilityLogger, TransactionData
+from src.llm_utils import DEFAULT_SEED  # Phase 3 – Step 3.1: moved to shared module
 from src.prompts import load_prompt
 from src.risk_analyst_agent import (
-    DEFAULT_SEED,
     NO_ACTIVITY_RESULT,
-    InvalidLLMOutputError,
     RiskAnalysisError,
     RiskAnalystAgent,
-    extract_json,
-    is_transient,
 )
 from tests.fakes import (
     FakeLLMClient,
@@ -146,49 +143,6 @@ def test_prompt_contains_method_typologies_and_levels():
 def test_prompt_missing_version_lists_available():
     with pytest.raises(FileNotFoundError, match="Available"):
         load_prompt("risk_analyst", "V999")
-
-
-# ===========================================================================
-# JSON extraction and error classification
-# ===========================================================================
-
-
-# Phase 2 – Step 2.7: JSON is found in the shapes models actually return
-@pytest.mark.parametrize(
-    "reply",
-    [
-        '{"a": 1}',
-        '  {"a": 1}\n',
-        '```json\n{"a": 1}\n```',
-        '```\n{"a": 1}\n```',
-        'Here is my analysis:\n{"a": 1}\nThanks!',
-        'Sure! ```JSON {"a": 1} ``` done',
-    ],
-)
-def test_extract_json_accepts_common_shapes(reply):
-    assert extract_json(reply) == {"a": 1}
-
-
-# Phase 2 – Step 2.7: anything that is not a JSON object is rejected
-@pytest.mark.parametrize("reply", ["", "not json", "[1, 2]", '{"a": ', "null"])
-def test_extract_json_rejects_garbage(reply):
-    with pytest.raises(InvalidLLMOutputError):
-        extract_json(reply)
-
-
-# Phase 2 – Step 2.7: which API errors are worth retrying
-@pytest.mark.parametrize(
-    ("error", "transient"),
-    [
-        (timeout_error(), True),
-        (rate_limit_error(), True),
-        (server_error(), True),
-        (auth_error(), False),
-        (bad_request_error(), False),
-    ],
-)
-def test_is_transient(error, transient):
-    assert is_transient(error) is transient
 
 
 # ===========================================================================

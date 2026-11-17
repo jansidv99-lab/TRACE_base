@@ -16,19 +16,24 @@ Error handling (Step 2.5):
 Audit (Step 2.6): every analyze_case call writes exactly one ExplainabilityLogger event.
 """
 
-import json
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from openai import APIConnectionError, APIStatusError, OpenAIError, RateLimitError
+from openai import OpenAIError
 from pydantic import ValidationError
 
 from src import config
 from src.case_formatter import format_case_for_llm, unmask
 from src.foundation_sar import CaseData, ExplainabilityLogger, RiskAnalystOutput
+from src.llm_utils import (  # Phase 3 – Step 3.1: shared helpers
+    DEFAULT_SEED,
+    InvalidLLMOutputError,
+    call_with_retry,
+    describe_error,
+    extract_json,
+)
 from src.prompts import load_prompt
 
 # Phase 2 – Step 2.4: the fixed answer for cases with no activity (no API call needed)
@@ -43,18 +48,6 @@ NO_ACTIVITY_RESULT = RiskAnalystOutput(
     ),
     key_indicators=["No account activity in the review period"],
 )
-
-# Phase 2 – Step 2.7: fixed sampling seed — makes repeated runs far more consistent (best effort)
-DEFAULT_SEED = 42
-
-# Phase 2 – Step 2.5: ```json ... ``` (or plain ```) fences some models wrap around JSON
-_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
-
-
-# Phase 2 – Step 2.5: the model's reply could not be turned into a valid result
-class InvalidLLMOutputError(ValueError):
-    pass
-
 
 # Phase 2 – Step 2.5: final failure for one case — the workflow routes it to manual review
 class RiskAnalysisError(Exception):
@@ -81,41 +74,6 @@ class AnalysisRun:
     # + same input should give the same answer (best effort, not guaranteed)
     system_fingerprint: str | None = None
     error: str | None = None  # Phase 2 – Step 2.5: set when the analysis failed
-
-
-# Phase 2 – Step 2.5: pull a JSON object out of a model reply (plain, fenced, or wrapped in prose)
-def extract_json(text: str) -> dict[str, Any]:
-    candidates = [text.strip()]
-    fenced = _FENCE.search(text)
-    if fenced:
-        candidates.append(fenced.group(1))
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        candidates.append(text[start : end + 1])
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            return data
-    raise InvalidLLMOutputError(f"no JSON object found in model reply: {text[:200]!r}")
-
-
-# Phase 2 – Step 2.5: errors worth retrying — they usually succeed a moment later
-def is_transient(error: Exception) -> bool:
-    if isinstance(error, APIConnectionError | RateLimitError):  # includes APITimeoutError
-        return True
-    return isinstance(error, APIStatusError) and error.status_code >= 500
-
-
-# Phase 2 – Step 2.5: short, model-readable summary of why an answer was rejected
-def _describe(error: Exception) -> str:
-    if isinstance(error, ValidationError):
-        return "; ".join(
-            f"{'.'.join(str(p) for p in e['loc']) or 'object'}: {e['msg']}" for e in error.errors()
-        )
-    return str(error)
 
 
 # Phase 2 – Step 2.4: the agent; the LLM client is injected (real OpenAI client or a test fake)
@@ -223,7 +181,7 @@ class RiskAnalystAgent:
                 except (InvalidLLMOutputError, ValidationError) as exc:
                     if repair == self.max_repairs:
                         raise RiskAnalysisError(
-                            case.case_id, f"invalid output: {_describe(exc)}", run.attempts
+                            case.case_id, f"invalid output: {describe_error(exc)}", run.attempts
                         ) from exc
                     run.repairs += 1
                     messages += [
@@ -242,37 +200,29 @@ class RiskAnalystAgent:
         raise AssertionError("unreachable")  # pragma: no cover
 
     # Phase 2 – Step 2.5: one completion, retrying transient API errors with exponential backoff
+    # Phase 3 – Step 3.1: retry/backoff/accounting now delegated to llm_utils.call_with_retry
     def _complete(self, messages: list[dict[str, str]], run: AnalysisRun) -> str:
-        for attempt in range(self.max_api_attempts):
-            run.attempts += 1
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    temperature=self.temperature,
-                    seed=self.seed,
-                    response_format={"type": "json_object"},
-                    messages=messages,
-                )
-            except OpenAIError as exc:
-                if not is_transient(exc) or attempt == self.max_api_attempts - 1:
-                    run.error = f"{type(exc).__name__}: {exc}"
-                    raise
-                self.sleep(self.backoff_seconds * 2**attempt)  # 1s, 2s, 4s, ...
-                continue
-            run.model = getattr(response, "model", None) or run.model
-            run.system_fingerprint = getattr(response, "system_fingerprint", None) or (
-                run.system_fingerprint
-            )
-            _add_usage(run.token_usage, response)
-            choices = getattr(response, "choices", None) or []
-            return (choices[0].message.content or "") if choices else ""
-        raise AssertionError("unreachable")  # pragma: no cover
+        response = call_with_retry(
+            lambda: self.client.chat.completions.create(
+                model=self.model,
+                temperature=self.temperature,
+                seed=self.seed,
+                response_format={"type": "json_object"},
+                messages=messages,
+            ),
+            run,
+            max_attempts=self.max_api_attempts,
+            backoff_seconds=self.backoff_seconds,
+            sleep=self.sleep,
+        )
+        choices = getattr(response, "choices", None) or []
+        return (choices[0].message.content or "") if choices else ""
 
 
 # Phase 2 – Step 2.5: follow-up message asking the model to fix its previous answer
 def _repair_prompt(error: Exception) -> str:
     return (
-        f"Your previous answer could not be accepted: {_describe(error)}. "
+        f"Your previous answer could not be accepted: {describe_error(error)}. "
         "Reply with ONLY a corrected JSON object with exactly these keys: reasoning, "
         "key_indicators, classification, risk_level, confidence_score."
     )
@@ -286,12 +236,3 @@ def _unmask_output(result: RiskAnalystOutput, id_map: dict[str, str]) -> RiskAna
             "key_indicators": [unmask(k, id_map) for k in result.key_indicators],
         }
     )
-
-
-# Phase 2 – Step 2.4: add one response's token counts to the running total
-def _add_usage(totals: dict[str, int], response: Any) -> None:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        totals[key] = totals.get(key, 0) + (getattr(usage, key, 0) or 0)

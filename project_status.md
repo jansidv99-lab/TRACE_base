@@ -1,6 +1,6 @@
 # Project Status – TRACE SAR System
 
-Last updated: 2026-11-16 · Master plan: [`plan/00-master/plan.md`](plan/00-master/plan.md)
+Last updated: 2026-11-17 · Master plan: [`plan/00-master/plan.md`](plan/00-master/plan.md)
 
 Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 
@@ -9,7 +9,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 00 – Master plan | ✅ | `docs/master-plan` · PR #1 merged |
 | 01 – Foundation & data modeling | ✅ | `feature/foundation-schemas` (PR #2), `feature/foundation-data-exploration` (PR #3) merged |
 | 02 – Risk Analyst agent | ✅ implemented, PR pending | `feature/risk-analyst-agent` |
-| 03 – Compliance Officer agent | ⏳ | – |
+| 03 – Compliance Officer agent | ✅ implemented, PR pending | `feature/compliance-officer-agent` |
 | 04 – Workflow integration & human gates | ⏳ | – |
 | 05 – Streamlit UI | ⏳ | – |
 | 06 – Test suite consolidation | ⏳ | – |
@@ -57,15 +57,29 @@ Plan: [`plan/02-risk-analyst-agent/plan.md`](plan/02-risk-analyst-agent/plan.md)
 - One factual slip (wrong date on an amount) seen in Step 2.4 → Stage 08 faithfulness grader.
 - ~8.5 s per case → ~17 min for 119 active cases sequentially → relevant to Stage 04.
 
-## Stage 03 – Compliance Officer agent ⏳
-| Step | Status |
-|---|---|
-| 3.1 ReACT prompt design | ⏳ |
-| 3.2 ComplianceOfficerAgent + generate_compliance_narrative | ⏳ |
-| 3.3 Narrative validation (< 120 words, 5 W's, terminology) | ⏳ |
-| 3.4 Regulatory citations | ⏳ |
-| 3.5 Revise-on-failure loop | ⏳ |
-| 3.6 Audit + tests | ⏳ |
+## Stage 03 – Compliance Officer agent ✅ (PR pending)
+Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-agent/plan.md) — real ReACT loop with function calling (verified via Vocareum)
+
+| Step | Status | Output |
+|---|---|---|
+| 3.1 Shared LLM utilities (refactor) | ✅ | `src/llm_utils.py`, `tests/test_llm_utils.py`; risk agent uses it, no behaviour change |
+| 3.2 Regulatory citation table | ✅ | `src/regulations.py` (10 citations, format-insensitive matching) |
+| 3.3 Narrative validators | ✅ | `src/narrative_checks.py` (length, 5 W's, terminology, internal IDs, dates, amounts, citations) |
+| 3.4 ReACT system prompt | ✅ | `src/prompts/compliance_officer_V1.md` (~1,030 tokens) |
+| 3.5 Tools: schemas + executor | ✅ | `src/compliance_tools.py` (4 tools, error observations instead of crashes) |
+| 3.6 ComplianceOfficerAgent ReACT loop | ✅ | `src/compliance_officer_agent.py` (live: 6 steps, accepted 95-word narrative) |
+| 3.7 Audit integration | ✅ | one audit event per call with summarised ReACT trace + validation report |
+| 3.8 Tests | ✅ | `tests/test_compliance_officer.py` (39 offline + 2 live, both live passed); `tool_call_response` fake |
+| 3.9 Demo notebook | ✅ | `notebooks/03_compliance_officer_demo.ipynb` (4 cases, all accepted, ~$0.02) |
+
+**Known findings (Stage 03):**
+- `gpt-4o-mini` emits no `Thought:` text alongside forced tool calls → trace has actions/observations only (`thought` tool argument deferred).
+- Redundant `check_narrative` calls are systematic: 2–4 per case in Step 3.9, even after a passing check
+  → main reason Stage 2 costs ~5× Stage 1 per case ($0.0042 vs $0.0008); `V2` rule: submit right after a pass.
+- Amount check warns on correct computed totals (e.g. the sum of four deposits) → teach it sums, or keep as warning.
+- Hedged wording ("suggesting potential structuring") passes the banned-terms list → tone grading in Stage 08.
+- Weak Risk Analyst calls flow through faithfully (GEO case classified Structuring on $4.8k/$7.4k deposits)
+  → shows why the Stage 04 human gate matters.
 
 ## Stage 04 – Workflow integration & human gates ⏳
 | Step | Status |

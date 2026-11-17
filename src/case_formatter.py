@@ -128,6 +128,14 @@ def _mask(text: str, ref_of: dict[str, str], case: CaseData) -> str:
     return text
 
 
+# Phase 3 – Step 3.6: the reverse of unmask — hide real IDs again (e.g. in approved risk findings)
+def remask(text: str, id_map: dict[str, str]) -> str:
+    """Replace real transaction IDs with their T### references."""
+    for ref, real in id_map.items():
+        text = text.replace(real, ref)
+    return text
+
+
 # Phase 2 – Step 2.3: put real transaction IDs back into model output (reasoning, indicators)
 def unmask(text: str, id_map: dict[str, str]) -> str:
     """Replace T### references with the real transaction IDs; unknown refs are left as-is."""
