@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.compliance_officer_agent import ComplianceError
+from src.compliance_officer_agent import ComplianceError, ComplianceOfficerAgent
 from src.foundation_sar import (
     AccountData,
     CaseData,
@@ -22,7 +22,7 @@ from src.foundation_sar import (
     SARDocument,
     TransactionData,
 )
-from src.risk_analyst_agent import RiskAnalysisError
+from src.risk_analyst_agent import RiskAnalysisError, RiskAnalystAgent
 from src.sar_workflow import (
     FINAL_STATUSES,
     LOW_RISK_REASON,
@@ -36,6 +36,7 @@ from src.sar_workflow import (
     build_sar,
     involved_transactions,
 )
+from tests.fakes import FakeLLMClient, make_response, risk_json, tool_call_response
 
 RISK = RiskAnalystOutput(
     classification="Structuring", confidence_score=0.9, risk_level="High",
@@ -513,3 +514,136 @@ def test_build_sar_id(audit, sample_case):
     wf, rec = _file(audit, sample_case)
     sar = build_sar(rec, generated_at=datetime(2026, 11, 17, 9, 30, 5, tzinfo=UTC))
     assert sar.sar_id == "SAR_CUST_0002_20261117093005"
+
+
+# ===========================================================================
+# Phase 4 – Step 4.6: end-to-end integration — REAL agents on FakeLLMClient
+# ===========================================================================
+PRICED_MODEL = "gpt-4o-mini-2024-07-18"  # has an entry in metrics.PRICES
+E2E_CITATIONS = ["31 U.S.C. 5318(g)", "31 U.S.C. 5324"]
+# Passes every Stage 03 check against three_txn_case (same dates, amounts, branch, account)
+E2E_NARRATIVE = (
+    "Renee Blair, a banker, made three cash deposits into a Money Market account at the "
+    "Westside Plaza branch on March 3, 2025, March 5, 2025 and March 7, 2025, totalling "
+    "$9,800.00, $9,500.00 and $9,900.00. Each deposit fell just below the $10,000 reporting "
+    "threshold, a pattern consistent with structuring to evade Currency Transaction Report "
+    "requirements. The activity is inconsistent with the customer's profile."
+)
+
+
+# Phase 4 – Step 4.6: model replies, priced so the metrics can be checked in dollars
+def _risk_reply(**overrides):
+    fields = {
+        "classification": "Structuring",
+        "risk_level": "High",
+        "confidence_score": 0.9,
+        "key_indicators": ["T001 and T002 are cash deposits just under $10,000"],
+        "reasoning": "Step 1: profile. Step 2: T001, T002, T003. Step 3: under threshold. "
+                     "Step 4: Structuring. Step 5: High.",
+    }
+    return make_response(risk_json(**{**fields, **overrides}), model=PRICED_MODEL)
+
+
+def _tool(name, args, call_id):
+    response = tool_call_response(name, args, call_id)
+    response.model = PRICED_MODEL
+    return response
+
+
+def _react_script(narrative=E2E_NARRATIVE):
+    return [
+        _tool("get_transaction_details", {"refs": ["T001", "T002", "T003"]}, "c1"),
+        _tool("lookup_regulations", {"typology": "Structuring"}, "c2"),
+        _tool("submit_narrative", {"narrative": narrative, "citations": E2E_CITATIONS,
+                                   "narrative_reasoning": "Facts from T001-T003."}, "c3"),
+    ]
+
+
+# Phase 4 – Step 4.6: both real agents share one audit log, each with its own fake client
+def _e2e(audit, risk_script, compliance_script, **compliance_kwargs):
+    logger, path = audit
+    risk_client, compliance_client = FakeLLMClient(risk_script), FakeLLMClient(compliance_script)
+    risk_agent = RiskAnalystAgent(risk_client, logger, model=PRICED_MODEL, sleep=lambda _s: None)
+    compliance_agent = ComplianceOfficerAgent(
+        compliance_client, logger, model=PRICED_MODEL, sleep=lambda _s: None, **compliance_kwargs
+    )
+    wf = SARWorkflow(risk_agent, compliance_agent, logger, output_dir=path.parent / "outputs")
+    return wf, risk_client, compliance_client
+
+
+# Phase 4 – Step 4.6: CSV-shaped case → SAR file, with the full audit trail in order
+def test_e2e_happy_path(audit, three_txn_case):
+    wf, risk_client, compliance_client = _e2e(audit, [_risk_reply()], _react_script())
+    [rec] = wf.process([three_txn_case], ScriptedReviewer("analyst_1"),
+                       ScriptedReviewer("officer_1"))
+
+    assert rec.status == CaseStatus.SAR_FILED
+    assert len(risk_client.calls) == 1 and len(compliance_client.calls) == 3
+    sar = SARDocument.model_validate_json(Path(rec.sar_path).read_text(encoding="utf-8"))
+    # risk named T001/T002 (unmasked by the risk agent); the ReACT agent looked up T003 too
+    assert sar.activity.transaction_ids == list(TXN_IDS)
+    assert sar.activity.total_amount == 29200.00
+    assert sar.narrative.narrative == E2E_NARRATIVE
+    assert sar.provenance.risk_model == PRICED_MODEL
+    # the model never saw a real transaction ID in either stage
+    sent = json.dumps([c["messages"] for c in risk_client.calls + compliance_client.calls])
+    assert not any(tid in sent for tid in TXN_IDS)
+
+    trail = [(e["agent_type"], e["action"]) for e in _records(audit[1])]
+    assert trail == [
+        ("RiskAnalyst", "analyze_case"),
+        ("Human", "risk_gate_decision"),
+        ("ComplianceOfficer", "generate_narrative"),
+        ("Human", "compliance_gate_decision"),
+        ("Workflow", "sar_generated"),
+    ]
+    assert {e["case_id"] for e in _records(audit[1])} == {three_txn_case.case_id}
+
+
+# Phase 4 – Step 4.6: the cost optimization, measured — a rejected case makes ZERO Stage 2 calls
+def test_e2e_risk_rejection_skips_compliance(audit, three_txn_case):
+    low = _risk_reply(classification="Other", risk_level="Low")
+    wf, _, compliance_client = _e2e(audit, [low], [])  # empty script: any call would fail
+    [rec] = wf.process([three_txn_case], ScriptedReviewer(), ScriptedReviewer())
+    assert rec.status == CaseStatus.CLOSED_RISK_REJECTED
+    assert compliance_client.calls == []
+    assert [e["action"] for e in _records(audit[1])] == ["analyze_case", "risk_gate_decision"]
+
+
+# Phase 4 – Step 4.6: malformed model output twice → RiskAnalysisError → manual review
+def test_e2e_risk_failure_to_manual_review(audit, three_txn_case):
+    wf, _, compliance_client = _e2e(audit, ["not json", "still not json"], [])
+    [rec] = wf.process([three_txn_case], ScriptedReviewer(), ScriptedReviewer())
+    assert rec.status == CaseStatus.MANUAL_REVIEW
+    assert compliance_client.calls == []
+    assert [(e["agent_type"], e["success"]) for e in _records(audit[1])] == [
+        ("RiskAnalyst", False), ("Workflow", False),
+    ]
+
+
+# Phase 4 – Step 4.6: ReACT step budget exhausted → ComplianceError → manual review, no SAR
+def test_e2e_compliance_failure_to_manual_review(audit, three_txn_case):
+    stuck = [_tool("lookup_regulations", {"typology": "Structuring"}, f"c{i}") for i in range(2)]
+    wf, _, _ = _e2e(audit, [_risk_reply()], stuck, max_steps=2)
+    [rec] = wf.process([three_txn_case], ScriptedReviewer(), ScriptedReviewer())
+    assert rec.status == CaseStatus.MANUAL_REVIEW
+    assert "step budget exhausted" in rec.error
+    assert rec.sar_path is None
+    assert rec.compliance_stats.steps == 2  # spent tokens are still on the record for metrics
+    assert [e["action"] for e in _records(audit[1])][-2:] == [
+        "generate_narrative", "routed_to_manual_review",
+    ]
+
+
+# Phase 4 – Step 4.6: metrics in dollars from a real (faked) batch — one filed, one rejected
+def test_e2e_metrics(audit, three_txn_case, second_case):
+    low = _risk_reply(classification="Other", risk_level="Low")
+    wf, _, _ = _e2e(audit, [_risk_reply(), low], _react_script())
+    wf.process([three_txn_case, second_case], ScriptedReviewer(), ScriptedReviewer())
+    m = wf.metrics()
+    # fake replies: 100 prompt + 20 completion tokens each → $0.000027 per call on gpt-4o-mini
+    per_call = 100 / 1e6 * 0.15 + 20 / 1e6 * 0.60
+    assert m.risk.cost_usd == pytest.approx(2 * per_call)
+    assert m.compliance.cost_usd == pytest.approx(3 * per_call)  # 3 ReACT turns
+    assert m.cost_avoided_usd == pytest.approx(3 * per_call)  # the rejected case's narrative
+    assert m.savings_rate == pytest.approx(3 / 8)
