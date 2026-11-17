@@ -517,6 +517,28 @@ class ExplainabilityLogger:
         return record
 
 
+# Phase 5 – Step 5.5: read the audit trail back (UI audit view, later Stage 08 run log)
+def read_audit_events(path: str | Path, case_id: str | None = None) -> list[dict[str, Any]]:
+    """Return the audit events in file order, optionally only those for `case_id`.
+
+    A missing file means "no events yet". Lines that are not valid JSON objects (e.g. a line cut off
+    by a crash mid-write) are skipped rather than failing the whole read.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    events = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and (case_id is None or event.get("case_id") == case_id):
+                events.append(event)
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Phase 1 – Step 1.7: loading CSVs into validated cases
 # ---------------------------------------------------------------------------

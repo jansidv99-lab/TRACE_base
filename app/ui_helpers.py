@@ -211,3 +211,50 @@ def trace_rows(trace: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             "observation": _observation_text(step.get("action"), step.get("observation")),
         })
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 – Step 5.5: SAR and audit views
+# ---------------------------------------------------------------------------
+# Phase 5 – Step 5.5: the SAR's sections for display — the screen shows name and occupation only;
+# the downloadable JSON is the full filing (Stage 04 decision 2)
+def sar_sections(sar: dict[str, Any]) -> dict[str, Any]:
+    subject, activity, prov = sar["subject"], sar["activity"], sar.get("provenance") or {}
+    return {
+        "subject": f"{subject['name']} · {subject['occupation']} · {subject['customer_id']}",
+        "accounts": [
+            f"{a['account_type'].replace('_', ' ')} ({a['status']})" for a in sar["accounts"]
+        ],
+        "activity": (
+            f"{activity['typology']} · {activity['risk_level']} · "
+            f"confidence {activity['confidence_score']:.0%} · "
+            f"{activity['start_date']} to {activity['end_date']} · "
+            f"${activity['total_amount']:,.2f} over {len(activity['transaction_ids'])} "
+            "transaction(s)"
+        ),
+        "narrative": sar["narrative"]["narrative"],
+        "citations": sar["narrative"]["regulatory_citations"],
+        "reviews": [
+            f"{label}: {r['decision']} by {r['reviewer_id']} at {r['decided_at'][:19]}"
+            for label, r in (("Risk gate", sar["risk_review"]),
+                             ("Compliance gate", sar["compliance_review"]))
+        ],
+        "provenance": (
+            f"risk {prov.get('risk_model')} / {prov.get('risk_prompt_version')} · "
+            f"compliance {prov.get('compliance_model')} / {prov.get('compliance_prompt_version')}"
+        ),
+    }
+
+
+# Phase 5 – Step 5.5: one row per audit event — who did what, when, at what cost, and why
+def audit_rows(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{
+        "time": (e.get("timestamp") or "")[:19].replace("T", " "),
+        "actor": e.get("agent_type"),
+        "action": e.get("action"),
+        "success": e.get("success"),
+        "reviewer": e.get("reviewer_id") or "",
+        "tokens": (e.get("token_usage") or {}).get("total_tokens"),
+        "prompt": e.get("prompt_version"),
+        "reasoning": _short(e.get("reasoning") or e.get("error_message") or "", 120),
+    } for e in events]

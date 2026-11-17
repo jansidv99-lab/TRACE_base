@@ -349,3 +349,62 @@ def test_manual_review_listed(tmp_path, cases):
     manual = at.dataframe[-1].value
     assert list(manual["failed_stage"]) == ["compliance"]
     assert "step budget exhausted" in manual["error"][0]
+
+
+# ===========================================================================
+# Phase 5 – Step 5.5: SARs & audit views
+# ===========================================================================
+def _sars_page(tmp_path, cases, file_sar=True):
+    at, wf = _app(tmp_path, cases,
+                  compliance=StubComplianceAgent(result=GOOD_NARRATIVE, trace=TRACE))
+    cid = cases[0].case_id
+    wf.run_risk_analysis(cid)
+    wf.record_risk_decision(cid, HumanDecision(gate="risk", decision="approve",
+                                               reviewer_id="analyst_1"))
+    wf.run_compliance(cid)
+    if file_sar:
+        wf.record_compliance_decision(cid, HumanDecision(gate="compliance", decision="approve",
+                                                         reviewer_id="officer_1"))
+    at.run()
+    at.switch_page("views/sars_audit.py").run()
+    return at, wf
+
+
+def test_sars_page_empty(app):
+    app.run()
+    app.switch_page("views/sars_audit.py").run()
+    assert not app.exception
+    captions = " ".join(c.value for c in app.caption)
+    assert "No SARs filed" in captions and "No case has been processed" in captions
+
+
+# Phase 5 – Step 5.5: the filed SAR is rendered by section with a JSON download
+def test_sar_rendered_with_download(tmp_path, cases):
+    at, wf = _sars_page(tmp_path, cases)
+    assert not at.exception
+    rec = wf.get(cases[0].case_id)
+    text = " ".join(m.value for m in at.markdown)
+    assert "**Subject:** Renee Blair · Banker · CUST_0002" in text
+    assert "Risk gate: approve by analyst_1" in text
+    assert "Compliance gate: approve by officer_1" in text
+    assert "1978-05-14" not in text  # DOB stays in the file, off the screen
+    download = at.get("download_button")[0]
+    assert download.proto.label == "Download SAR (JSON)"
+    assert rec.sar_id in at.code[0].value  # raw JSON expander
+
+
+# Phase 5 – Step 5.5: the audit trail lists every event for the case, in order
+def test_audit_trail(tmp_path, cases):
+    at, _ = _sars_page(tmp_path, cases)
+    trail = at.dataframe[-1].value
+    assert list(trail["action"]) == [
+        "risk_gate_decision", "compliance_gate_decision", "sar_generated",
+    ]  # stub agents write no events of their own; real agents add theirs (Step 4.6)
+    assert list(trail["reviewer"]) == ["analyst_1", "officer_1", ""]
+
+
+# Phase 5 – Step 5.5: a case awaiting review has an audit trail but no SAR yet
+def test_audit_without_sar(tmp_path, cases):
+    at, _ = _sars_page(tmp_path, cases, file_sar=False)
+    assert any("No SARs filed" in c.value for c in at.caption)
+    assert list(at.dataframe[-1].value["action"]) == ["risk_gate_decision"]

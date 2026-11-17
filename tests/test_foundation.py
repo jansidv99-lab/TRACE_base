@@ -27,6 +27,7 @@ from src.foundation_sar import (
     SARDocument,
     TransactionData,
     count_words,
+    read_audit_events,
 )
 
 TOMORROW = (date.today() + timedelta(days=1)).isoformat()
@@ -562,3 +563,22 @@ def test_loader_skips_customer_without_valid_accounts(tmp_path):
     messages = [e.message for e in loader.errors]
     assert any("account_type" in m for m in messages)
     assert any("no valid accounts" in m for m in messages)
+
+
+# Phase 5 – Step 5.5: the audit trail can be read back, per case, surviving a damaged line
+def test_read_audit_events(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    assert read_audit_events(path) == []  # no file yet = no events
+    logger = ExplainabilityLogger(path)
+    logger.log_agent_action("RiskAnalyst", "analyze_case", "CASE_A", None, None, "r", 0)
+    logger.log_agent_action("Human", "risk_gate_decision", "CASE_B", None, None, "r", 0)
+    with path.open("a", encoding="utf-8") as f:
+        f.write('{"case_id": "CASE_A", "trunc\n')  # a line cut off mid-write
+        f.write("[1, 2]\n")  # valid JSON but not an event
+    logger.log_agent_action("Workflow", "sar_generated", "CASE_A", None, None, "r", 0)
+    assert [e["action"] for e in read_audit_events(path)] == [
+        "analyze_case", "risk_gate_decision", "sar_generated",
+    ]
+    assert [e["action"] for e in read_audit_events(path, "CASE_A")] == [
+        "analyze_case", "sar_generated",
+    ]

@@ -4,6 +4,7 @@ import pytest
 from app.ui_helpers import (
     DEFAULT_RISK_COST_USD,
     account_rows,
+    audit_rows,
     case_label,
     cited_refs,
     customer_profile,
@@ -15,6 +16,7 @@ from app.ui_helpers import (
     next_new_cases,
     queue_rows,
     reasoning_steps,
+    sar_sections,
     status_counts,
     trace_rows,
     transaction_rows,
@@ -170,3 +172,52 @@ def test_trace_rows():
     ]
     assert "<draft, 3 words>" in rows[2]["arguments"]  # drafts are summarised, not dumped
     assert rows[1]["thought"] == "Need the law." and rows[3]["action"] == "(text only)"
+
+
+# ===========================================================================
+# Phase 5 – Step 5.5: SAR and audit helpers
+# ===========================================================================
+SAR = {
+    "sar_id": "SAR_CUST_0002_20261117120000",
+    "subject": {"customer_id": "CUST_0002", "name": "Renee Blair", "occupation": "Banker",
+                "date_of_birth": "1978-05-14", "address": "959 Janet Cape"},
+    "accounts": [{"account_type": "Money_Market", "status": "Active"}],
+    "activity": {"typology": "Structuring", "risk_level": "High", "confidence_score": 0.9,
+                 "start_date": "2025-03-03", "end_date": "2025-03-07", "total_amount": 29200.0,
+                 "transaction_ids": ["A", "B", "C"]},
+    "narrative": {"narrative": "Renee Blair made deposits.",
+                  "regulatory_citations": ["31 U.S.C. 5324"]},
+    "risk_review": {"decision": "approve", "reviewer_id": "analyst_1",
+                    "decided_at": "2026-11-17T12:00:00+00:00"},
+    "compliance_review": {"decision": "approve", "reviewer_id": "officer_1",
+                          "decided_at": "2026-11-17T12:05:00+00:00"},
+    "provenance": {"risk_model": "gpt-4o-mini", "risk_prompt_version": "V1",
+                   "compliance_model": "gpt-4o-mini", "compliance_prompt_version": "V1"},
+}
+
+
+# Phase 5 – Step 5.5: readable sections; DOB and address stay out of the on-screen view
+def test_sar_sections():
+    s = sar_sections(SAR)
+    assert s["subject"] == "Renee Blair · Banker · CUST_0002"
+    assert s["accounts"] == ["Money Market (Active)"]
+    assert s["activity"] == (
+        "Structuring · High · confidence 90% · 2025-03-03 to 2025-03-07 · "
+        "$29,200.00 over 3 transaction(s)"
+    )
+    assert s["reviews"] == [
+        "Risk gate: approve by analyst_1 at 2026-11-17T12:00:00",
+        "Compliance gate: approve by officer_1 at 2026-11-17T12:05:00",
+    ]
+    assert "1978-05-14" not in str(s) and "Janet Cape" not in str(s)
+
+
+def test_audit_rows():
+    [row] = audit_rows([{
+        "timestamp": "2026-11-17T12:00:01.123+00:00", "agent_type": "Human",
+        "action": "risk_gate_decision", "success": True, "reviewer_id": "analyst_1",
+        "prompt_version": "V1", "reasoning": "x" * 200,
+    }])
+    assert row["time"] == "2026-11-17 12:00:01"
+    assert (row["actor"], row["reviewer"], row["tokens"]) == ("Human", "analyst_1", None)
+    assert len(row["reasoning"]) == 120 and row["reasoning"].endswith("…")
