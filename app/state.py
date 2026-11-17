@@ -14,10 +14,11 @@ app runs; `get_workflow()` then uses it as is.
 from typing import Any
 
 import streamlit as st
+from pydantic import ValidationError
 
 from src import config
-from src.foundation_sar import CaseData, DataLoader, ExplainabilityLogger
-from src.sar_workflow import SARWorkflow
+from src.foundation_sar import CaseData, DataLoader, ExplainabilityLogger, HumanDecision
+from src.sar_workflow import SARWorkflow, WorkflowError
 
 WORKFLOW_KEY = "workflow"
 REVIEWER_KEY = "reviewer_id"
@@ -76,6 +77,34 @@ def flash(kind: str, message: str) -> None:
 def show_flash() -> None:
     for kind, message in st.session_state.pop(FLASH_KEY, []):
         getattr(st, kind)(message)
+
+
+# Phase 5 – Step 5.3: turn a submitted decision form into a HumanDecision and record it.
+# Shared by both gates; every refusal becomes a readable message instead of a traceback.
+def record_decision(gate: str, case_id: str, choice: str, reason: str) -> bool:
+    reviewer = reviewer_id()
+    if reviewer is None:
+        st.error("Enter your reviewer ID in the sidebar before recording a decision.")
+        return False
+    try:
+        decision = HumanDecision(
+            gate=gate, decision=choice, reviewer_id=reviewer, reason=reason or None
+        )
+    except ValidationError as exc:
+        st.error("; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()))
+        return False
+    workflow = get_workflow()
+    record = workflow.get(case_id)
+    try:
+        if gate == "risk":
+            workflow.record_risk_decision(case_id, decision)
+        else:
+            workflow.record_compliance_decision(case_id, decision)
+    except WorkflowError as exc:
+        st.error(str(exc))
+        return False
+    flash("success", f"{case_id}: {choice} recorded by {reviewer} → {record.status}")
+    return True
 
 
 # Phase 5 – Step 5.1: the reviewer ID typed in the sidebar; None means decisions are blocked

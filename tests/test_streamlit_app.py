@@ -153,3 +153,77 @@ def test_no_new_cases(tmp_path, cases):
     at.run()
     assert any("No new cases" in i.value for i in at.info)
     assert at.button(key="analyze_batch").disabled
+
+
+# ===========================================================================
+# Phase 5 – Step 5.3: risk review screen
+# ===========================================================================
+# Phase 5 – Step 5.3: open the risk review page with the first case analysed
+def _risk_page(tmp_path, cases, reviewer="analyst_1"):
+    at, wf = _app(tmp_path, cases)
+    wf.run_risk_analysis(cases[0].case_id)
+    if reviewer:
+        at.session_state["reviewer_id"] = reviewer
+    at.run()
+    at.switch_page("views/risk_review.py").run()
+    return at, wf
+
+
+def _submit_risk(at, choice, reason=""):
+    at.radio(key="risk_choice").set_value(choice)
+    at.text_area(key="risk_reason").input(reason)
+    at.button(key="risk_submit").click().run()
+
+
+def test_risk_review_empty(app):
+    app.run()
+    app.switch_page("views/risk_review.py").run()
+    assert any("No cases are waiting" in i.value for i in app.info)
+
+
+# Phase 5 – Step 5.3: the finding and evidence render with masked refs and cited rows
+def test_risk_review_shows_evidence(tmp_path, cases):
+    at, _ = _risk_page(tmp_path, cases)
+    assert not at.exception
+    assert [m.value for m in at.main.metric] == ["Structuring", "High", "90%"]  # main area only
+    text = " ".join(m.value for m in at.markdown)
+    assert "T001 just under threshold" in text
+    assert "TXN_B24455F3" not in text  # the real ID never reaches the screen
+    tx = at.dataframe[-1].value
+    assert list(tx["ref"]) == ["T001"] and list(tx["cited"]) == [True]
+
+
+# Phase 5 – Step 5.3: approve → RISK_APPROVED, success after rerun, case leaves the queue
+def test_risk_approve(tmp_path, cases):
+    at, wf = _risk_page(tmp_path, cases)
+    _submit_risk(at, "approve")
+    assert wf.get(cases[0].case_id).status == "RISK_APPROVED"
+    assert wf.get(cases[0].case_id).risk_decision.reviewer_id == "analyst_1"
+    assert any("approve recorded by analyst_1" in s.value for s in at.success)
+    assert any("No cases are waiting" in i.value for i in at.info)
+
+
+# Phase 5 – Step 5.3: reject with a reason → closed
+def test_risk_reject_with_reason(tmp_path, cases):
+    at, wf = _risk_page(tmp_path, cases)
+    _submit_risk(at, "reject", "payroll transfer, known employer")
+    rec = wf.get(cases[0].case_id)
+    assert rec.status == "CLOSED_RISK_REJECTED"
+    assert rec.risk_decision.reason == "payroll transfer, known employer"
+
+
+# Phase 5 – Step 5.3: refusals are messages, and nothing changes
+@pytest.mark.parametrize(
+    ("reviewer", "choice", "message"),
+    [
+        (None, "approve", "Enter your reviewer ID"),
+        ("analyst_1", "reject", "a rejection must include a reason"),
+    ],
+    ids=["no-reviewer", "reject-without-reason"],
+)
+def test_risk_decision_refused(tmp_path, cases, reviewer, choice, message):
+    at, wf = _risk_page(tmp_path, cases, reviewer=reviewer)
+    _submit_risk(at, choice)
+    assert not at.exception
+    assert any(message in e.value for e in at.error)
+    assert wf.get(cases[0].case_id).status == "RISK_REVIEW"

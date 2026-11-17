@@ -3,11 +3,18 @@ import pytest
 
 from app.ui_helpers import (
     DEFAULT_RISK_COST_USD,
+    account_rows,
     case_label,
+    cited_refs,
+    customer_profile,
+    display_refs,
     estimate_risk_cost,
+    masked,
     next_new_cases,
     queue_rows,
+    reasoning_steps,
     status_counts,
+    transaction_rows,
 )
 from src.foundation_sar import RiskAnalystOutput
 from src.sar_workflow import CaseRecord, CaseStatus
@@ -65,3 +72,58 @@ def test_status_counts(records):
     assert counts["NEW"] == 3 and counts["RISK_REVIEW"] == 1
     assert list(counts) == [str(s) for s in CaseStatus]  # every status, workflow order
     assert sum(counts.values()) == 4
+
+
+# ===========================================================================
+# Phase 5 – Step 5.3: risk review helpers
+# ===========================================================================
+REAL_ID = "TXN_B24455F3"  # the conftest transaction → display ref T001
+
+
+@pytest.fixture
+def reviewed(sample_case):
+    rec = CaseRecord(case=sample_case, status=CaseStatus.RISK_REVIEW)
+    rec.risk_output = RISK.model_copy(update={
+        "key_indicators": [f"{REAL_ID} is a large online transfer"],
+        "reasoning": f"Step 1: profile. Step 2: {REAL_ID} stands out. Step 3) flags.",
+    })
+    return rec
+
+
+# Phase 5 – Step 5.3: real IDs never reach the screen; the model's refs do
+def test_masked_and_cited(reviewed):
+    assert masked(reviewed.risk_output.key_indicators[0], reviewed.case) == (
+        "T001 is a large online transfer"
+    )
+    assert display_refs(reviewed.case) == {REAL_ID: "T001"}
+    assert cited_refs(reviewed) == {"T001"}
+    assert cited_refs(CaseRecord(case=reviewed.case)) == set()  # not analysed yet
+
+
+# Phase 5 – Step 5.3: profile shows age, never DOB / SSN / address / phone
+def test_customer_profile(sample_case):
+    profile = customer_profile(sample_case)
+    assert profile["Age"] == 48  # born 1978-05-14, case created 2026-11-16
+    assert profile["Annual income"] == "$72,005"
+    shown = " ".join(map(str, profile.values()))
+    assert "1978-05-14" not in shown and "7201" not in shown and "Janet Cape" not in shown
+
+
+def test_account_and_transaction_rows(reviewed):
+    [acc] = account_rows(reviewed.case)
+    assert (acc["account"], acc["type"], acc["status"]) == ("ACC_1", "Money Market", "Active")
+    [row] = transaction_rows(reviewed.case, {"T001"})
+    assert row["cited"] is True and row["ref"] == "T001"
+    assert REAL_ID not in str(row)
+    assert transaction_rows(reviewed.case, set())[0]["cited"] is False
+
+
+@pytest.mark.parametrize(
+    ("text", "steps"),
+    [
+        ("Step 1: a. Step 2: b. Step 3) c.", ["Step 1: a.", "Step 2: b.", "Step 3) c."]),
+        ("no numbered steps here", ["no numbered steps here"]),
+    ],
+)
+def test_reasoning_steps(text, steps):
+    assert reasoning_steps(text) == steps

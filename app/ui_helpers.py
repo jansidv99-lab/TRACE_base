@@ -6,9 +6,13 @@ Planted transaction-ID prefixes (STRUCT_, LARGE_, ...) are the answer key of the
 are never part of any row shown to a reviewer.
 """
 
+import re
 from collections.abc import Iterable
+from datetime import date
 from typing import Any
 
+from src.case_formatter import format_case_for_llm, remask
+from src.foundation_sar import CaseData
 from src.sar_workflow import CaseRecord, CaseStatus
 
 # Phase 5 – Step 5.2: measured Stage 04 average per risk analysis (gpt-4o-mini, assumed prices);
@@ -59,3 +63,86 @@ def status_counts(records: Iterable[CaseRecord]) -> dict[str, int]:
     for rec in records:
         counts[str(rec.status)] += 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 – Step 5.3: risk review — evidence shown with the model's neutral refs (T001, ...)
+# ---------------------------------------------------------------------------
+# Real transaction IDs start with the planted answer key (STRUCT_, LARGE_, ...). On screen they are
+# re-masked to the same T### refs the model saw, so a reviewer is not biased by the prefix and can
+# still match an indicator to its row. SAR files and the audit log keep the real IDs.
+_STEP = re.compile(r"(?=\bStep\s+\d+\s*[:.)-])")
+
+
+# Phase 5 – Step 5.3: real ID → display ref for one case (same numbering as format_case_for_llm)
+def display_refs(case: CaseData) -> dict[str, str]:
+    return {real: ref for ref, real in format_case_for_llm(case).id_map.items()}
+
+
+# Phase 5 – Step 5.3: replace real transaction IDs in text with their display refs
+def masked(text: str, case: CaseData) -> str:
+    return remask(text or "", format_case_for_llm(case).id_map)
+
+
+# Phase 5 – Step 5.3: refs of the transactions the risk finding quotes (indicators or reasoning)
+def cited_refs(rec: CaseRecord) -> set[str]:
+    risk = rec.risk_output
+    if risk is None:
+        return set()
+    text = " ".join([*risk.key_indicators, risk.reasoning])
+    return {ref for real, ref in display_refs(rec.case).items() if real in text}
+
+
+# Phase 5 – Step 5.3: profile for the reviewer — no DOB, SSN, address or phone on screen
+def customer_profile(case: CaseData, as_of: date | None = None) -> dict[str, Any]:
+    c, as_of = case.customer, as_of or case.case_created_at.date()
+    years = as_of.year - c.date_of_birth.year - (
+        (as_of.month, as_of.day) < (c.date_of_birth.month, c.date_of_birth.day)
+    )
+    return {
+        "Name": c.name,
+        "Occupation": c.occupation,
+        "Age": years,
+        "Customer since": c.customer_since.isoformat(),
+        "Profile risk rating": c.risk_rating,
+        "Annual income": f"${c.annual_income:,.0f}",
+    }
+
+
+# Phase 5 – Step 5.3: accounts with short labels (ACC_1), as the model saw them
+def account_rows(case: CaseData) -> list[dict[str, Any]]:
+    return [{
+        "account": a.account_id.split("_", 2)[-1],
+        "type": a.account_type.replace("_", " "),
+        "status": a.status,
+        "opened": a.opening_date.isoformat(),
+        "balance": round(a.current_balance, 2),
+        "avg_monthly_balance": round(a.average_monthly_balance, 2),
+    } for a in case.accounts]
+
+
+# Phase 5 – Step 5.3: transactions with display refs; `cited` marks the rows the finding quotes
+def transaction_rows(case: CaseData, cited: set[str]) -> list[dict[str, Any]]:
+    refs = display_refs(case)
+    rows = []
+    for t in case.transactions:
+        ref = refs[t.transaction_id]
+        rows.append({
+            "cited": ref in cited,
+            "ref": ref,
+            "date": t.transaction_date.isoformat(),
+            "account": t.account_id.split("_", 2)[-1],
+            "type": t.transaction_type.replace("_", " "),
+            "amount": round(t.amount, 2),
+            "method": t.method,
+            "location": t.location or "",
+            "counterparty": t.counterparty or "",
+            "description": t.description,
+        })
+    return rows
+
+
+# Phase 5 – Step 5.3: "Step 1: ... Step 2: ..." → one string per step (whole text if no steps)
+def reasoning_steps(text: str) -> list[str]:
+    parts = [p.strip() for p in _STEP.split(text or "") if p.strip()]
+    return parts or [text]
