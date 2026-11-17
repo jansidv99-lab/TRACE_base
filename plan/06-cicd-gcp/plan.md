@@ -87,8 +87,11 @@ main ──► CI passes ──► CD: build image → Artifact Registry → Clo
       --server.address=0.0.0.0`
   - `.dockerignore` excludes `.env*`, `.venv`, `.git`, `logs`, `outputs`, `notebooks`, `tests`,
     `plan` and caches. **The API key can never be baked into the image.**
-  - CI gains a second job, `docker-build`: it builds the image without pushing, so a broken
-    Dockerfile fails the PR.
+  - A **separate CD pipeline**, `.github/workflows/cd.yml` (developer decision 2026-11-17: CI and
+    CD as two workflows, for clarity). Its job "Build and smoke-test container" builds the image,
+    checks it contains no `.env`, starts it, and waits for `/_stcore/health` to return `ok`. It runs
+    on PRs that touch the image's inputs, and after CI succeeds on `main`. `ci.yml` stays
+    lint-and-test only.
 - **Depends on:** 6.1
 
 ### Step 6.3 – GCP setup (`plan/06-cicd-gcp/gcp_setup.md`) — you run the commands
@@ -114,17 +117,18 @@ main ──► CI passes ──► CD: build image → Artifact Registry → Clo
      Secret Manager.
 - **Depends on:** – (can be done in parallel with 6.2)
 
-### Step 6.4 – CD workflow (`.github/workflows/deploy.yml`)
+### Step 6.4 – Deploy job in the CD workflow (`.github/workflows/cd.yml`)
 - **Purpose:** deploy every green `main` automatically.
 - **Output:**
-  - Trigger: `workflow_run` of `CI`, `completed`, branch `main`. The job runs only if
-    `conclusion == 'success'`, and checks out that run's `head_sha`.
+  - A `deploy` job in `cd.yml` that `needs: build`. It runs only for `workflow_run` (CI completed
+    successfully on `main`) or a manual dispatch from `main`, and checks out that run's `head_sha`.
+    PR runs stop after the build job.
   - `permissions: contents: read, id-token: write` (the token is used for WIF).
   - Steps:
     1. `google-github-actions/auth@v2` (WIF, no key)
     2. `setup-gcloud@v2`
     3. `gcloud auth configure-docker asia-south1-docker.pkg.dev`
-    4. `docker build` and `push`, tagged with the commit SHA
+    4. `docker build` and `push`, tagged with the commit SHA (the build job proves it starts)
     5. `google-github-actions/deploy-cloudrun@v2`
   - Deploy flags:
     - `--allow-unauthenticated` (public, decision 2)
@@ -148,10 +152,10 @@ main ──► CI passes ──► CD: build image → Artifact Registry → Clo
 ## 5. Files created or changed
 
 ```
-.github/workflows/ci.yml        (6.1; docker-build job added in 6.2)
+.github/workflows/ci.yml        (6.1; lint + test only)
 Dockerfile  .dockerignore       (6.2)
+.github/workflows/cd.yml        (6.2 build + smoke job; 6.4 adds the deploy job)
 plan/06-cicd-gcp/gcp_setup.md   (6.3)
-.github/workflows/deploy.yml    (6.4)
 CLAUDE.md  project_status.md    (6.5)
 app/streamlit_app.py            (only if Q1 is accepted)
 ```

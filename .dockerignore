@@ -1,0 +1,26 @@
+# Phase 6 – Step 6.2: keep the build context small and secret-free
+# Secrets — the API key must never enter an image
+.env
+.env.*
+
+# Local environments, VCS and caches
+.venv/
+.git/
+.github/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Generated output (audit logs, SARs) and development-only material
+logs/
+*.jsonl
+outputs/
+notebooks/
+tests/
+plan/
+*.png
+.vscode/
+.idea/

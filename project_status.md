@@ -12,7 +12,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 03 – Compliance Officer agent | ✅ | `feature/compliance-officer-agent` · PR #5 merged |
 | 04 – Workflow integration & human gates | ✅ | `feature/sar-workflow` · PR #6 merged |
 | 05 – Streamlit UI | ✅ (5.8 deferred) | `feature/streamlit-review-ui` · PR #7 merged |
-| 06 – CI/CD to GCP | 🔄 in progress | `chore/github-actions-ci` |
+| 06 – CI/CD to GCP | 🔄 in progress | `chore/github-actions-ci` (PR #8 merged), `chore/cloudrun-deploy` |
 | 07 – Test suite consolidation | ⏳ | – |
 | 08 – AI QA framework | ⏳ | – |
 
@@ -135,10 +135,10 @@ Note (developer, `project_goal.md`): same GCP account, separate resources for th
 
 | Step | Status |
 |---|---|
-| 6.1 CI workflow (GitHub Actions) | ⏳ |
-| 6.2 Dockerfile | ⏳ |
+| 6.1 CI workflow (GitHub Actions) | ✅ (PR #8, green on GitHub) |
+| 6.2 Dockerfile + CD pipeline (`cd.yml`: build & smoke test) | 🔄 |
 | 6.3 GCP setup (Artifact Registry, Secret Manager, WIF) | ⏳ |
-| 6.4 CD workflow (Cloud Run) | ⏳ |
+| 6.4 CD deploy job (Cloud Run) | ⏳ |
 
 ## Stage 07 – Test suite consolidation ⏳
 Was Stage 06.
