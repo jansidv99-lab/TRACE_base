@@ -8,9 +8,9 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 |---|---|---|
 | 00 – Master plan | ✅ | `docs/master-plan` · PR #1 merged |
 | 01 – Foundation & data modeling | ✅ | `feature/foundation-schemas` (PR #2), `feature/foundation-data-exploration` (PR #3) merged |
-| 02 – Risk Analyst agent | ✅ implemented, PR pending | `feature/risk-analyst-agent` |
-| 03 – Compliance Officer agent | ✅ implemented, PR pending | `feature/compliance-officer-agent` |
-| 04 – Workflow integration & human gates | ⏳ | – |
+| 02 – Risk Analyst agent | ✅ | `feature/risk-analyst-agent` · PR #4 merged |
+| 03 – Compliance Officer agent | ✅ | `feature/compliance-officer-agent` · PR #5 merged |
+| 04 – Workflow integration & human gates | 🔄 in progress | `feature/sar-workflow` |
 | 05 – Streamlit UI | ⏳ | – |
 | 06 – Test suite consolidation | ⏳ | – |
 | 07 – CI/CD to GCP | ⏳ | – |
@@ -37,7 +37,7 @@ Plan: [`plan/01-foundation/plan.md`](plan/01-foundation/plan.md)
 | 1.7 DataLoader | ✅ | 150 cases, 368 data-quality flags |
 | 1.8 Foundation tests | ✅ | `tests/test_foundation.py`, `tests/conftest.py` |
 
-## Stage 02 – Risk Analyst agent ✅ (PR pending)
+## Stage 02 – Risk Analyst agent ✅
 Plan: [`plan/02-risk-analyst-agent/plan.md`](plan/02-risk-analyst-agent/plan.md)
 
 | Step | Status | Output |
@@ -57,7 +57,7 @@ Plan: [`plan/02-risk-analyst-agent/plan.md`](plan/02-risk-analyst-agent/plan.md)
 - One factual slip (wrong date on an amount) seen in Step 2.4 → Stage 08 faithfulness grader.
 - ~8.5 s per case → ~17 min for 119 active cases sequentially → relevant to Stage 04.
 
-## Stage 03 – Compliance Officer agent ✅ (PR pending)
+## Stage 03 – Compliance Officer agent ✅
 Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-agent/plan.md) — real ReACT loop with function calling (verified via Vocareum)
 
 | Step | Status | Output |
@@ -81,15 +81,18 @@ Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-ag
 - Weak Risk Analyst calls flow through faithfully (GEO case classified Structuring on $4.8k/$7.4k deposits)
   → shows why the Stage 04 human gate matters.
 
-## Stage 04 – Workflow integration & human gates ⏳
-| Step | Status |
-|---|---|
-| 4.1 Workflow module (`src/sar_workflow.py`) | ⏳ |
-| 4.2 Human decision gates | ⏳ |
-| 4.3 SAR document generation | ⏳ |
-| 4.4 Efficiency metrics | ⏳ |
-| 4.5 Integration notebook | ⏳ |
-| 4.6 Integration tests | ⏳ |
+## Stage 04 – Workflow integration & human gates 🔄
+Plan: [`plan/04-workflow-integration/plan.md`](plan/04-workflow-integration/plan.md) — approved with all recommendations (sequential batch, PII in SAR file only, approve/reject only, all cases to the gate, tests before notebook)
+
+| Step | Status | Output |
+|---|---|---|
+| 4.1 Gate and SAR schemas | ⏳ | `HumanDecision`, `SARDocument`, `AgentType` += `Workflow` |
+| 4.2 Workflow core | ⏳ | `src/sar_workflow.py` (state machine, manual-review routing) |
+| 4.3 Human decision gates | ⏳ | audited gate decisions, scripted + console reviewers |
+| 4.4 SAR document generation | ⏳ | `outputs/sars/<sar_id>.json` |
+| 4.5 Efficiency metrics | ⏳ | `src/metrics.py` (cost per stage, cost avoided) |
+| 4.6 Integration tests | ⏳ | `tests/test_workflow.py` |
+| 4.7 Integration notebook | ⏳ | `notebooks/03_workflow_integration.ipynb` |
 
 ## Stage 05 – Streamlit UI ⏳
 | Step | Status |
