@@ -33,3 +33,7 @@ JUDGE_MODEL: str | None = os.getenv("JUDGE_MODEL")
 # Phase 6 – Step 6.1: default must match the prompt file names exactly ("V1", not "v1"): Linux
 # (CI, Cloud Run) has case-sensitive file names, so "v1" only ever worked by accident on Windows
 PROMPT_VERSION: str = os.getenv("PROMPT_VERSION", "V1")
+
+# Phase 6 – Step 6.4: optional passcode for the public Cloud Run URL (Stage 06 decision Q1);
+# injected from Secret Manager on Cloud Run, unset locally and in tests → no gate
+APP_PASSCODE: str | None = os.getenv("APP_PASSCODE") or None

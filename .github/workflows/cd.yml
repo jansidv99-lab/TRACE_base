@@ -1,0 +1,144 @@
+# Phase 6 – Step 6.2: continuous delivery — package the app as a container (and, from Step 6.4,
+# push it to Artifact Registry and deploy it to Cloud Run)
+#
+# CI (ci.yml) answers "is the code correct?"; CD (this file) answers "can we ship it?".
+#
+#   pull request to main ─► build + smoke-test the image only (catches a broken Dockerfile early)
+#   CI succeeded on main ─► build + smoke-test ─► (Step 6.4) push ─► deploy to Cloud Run
+#
+# Note: GitHub only starts `workflow_run` workflows from the default branch, so the
+# "after CI on main" path becomes active once this file is merged.
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - requirements.txt
+      - app/**
+      - src/**
+      - project_data/**
+      - .streamlit/**
+      - .github/workflows/cd.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Never cancel a deploy half-way; outdated PR checks may be cancelled
+concurrency:
+  group: cd-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build and smoke-test container
+    # After CI on main: only if CI passed. PRs and manual runs: always.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the code (the exact commit CI tested, when triggered by CI)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Build the image
+        run: docker build -t trace-sar:candidate .
+
+      - name: The image contains no .env file
+        run: docker run --rm trace-sar:candidate sh -c 'test ! -e .env && echo "no .env in image"'
+
+      - name: Start the app and wait for the health check
+        run: |
+          docker run -d --name trace-sar -p 8080:8080 trace-sar:candidate
+          for i in $(seq 1 30); do
+            if [ "$(curl -s http://localhost:8080/_stcore/health)" = "ok" ]; then
+              echo "health: ok after ${i} attempt(s)"; exit 0
+            fi
+            sleep 2
+          done
+          echo "app did not become healthy within 60 s"; exit 1
+
+      - name: Show container log (on failure)
+        if: failure()
+        run: docker logs trace-sar || true
+
+  # Phase 6 – Step 6.4: push the image and deploy it to Cloud Run — only from main, after CI passed.
+  # All names come from GitHub repository variables (runbook plan/06-cicd-gcp/gcp_setup.md, block 8);
+  # no secret is stored in GitHub: login is keyless (WIF) and the API key lives in Secret Manager.
+  deploy:
+    name: Deploy to Cloud Run
+    needs: build
+    if: >-
+      github.event_name == 'workflow_run' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write   # lets the job request GitHub's OIDC token for Workload Identity Federation
+    env:
+      REGION: ${{ vars.GCP_REGION }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      # one image per commit: the tag says exactly which code is running (rollback = redeploy a tag)
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.AR_REPO }}/trace-sar:${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Check out the code CI tested
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Authenticate to Google Cloud (keyless, as the deployer service account)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push the image to Artifact Registry
+        run: |
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run (public URL, max 1 instance)
+        run: |
+          SECRETS="OPENAI_API_KEY=${{ vars.KEY_SECRET }}:latest"
+          if [ -n "${{ vars.PASSCODE_SECRET }}" ]; then
+            SECRETS="${SECRETS},APP_PASSCODE=${{ vars.PASSCODE_SECRET }}:latest"
+          fi
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --service-account "${{ vars.RUNTIME_SA }}" \
+            --allow-unauthenticated \
+            --set-secrets "$SECRETS" \
+            --set-env-vars "OPENAI_BASE_URL=${{ vars.OPENAI_BASE_URL }},MODEL=${{ vars.MODEL }},PROMPT_VERSION=${{ vars.PROMPT_VERSION }}" \
+            --port 8080 --cpu 1 --memory 1Gi \
+            --min-instances 0 --max-instances 1 \
+            --session-affinity --timeout 3600 \
+            --quiet
+
+      - name: Smoke test the live service
+        run: |
+          URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"
+          for i in $(seq 1 10); do
+            if [ "$(curl -s "$URL/_stcore/health")" = "ok" ]; then
+              echo "health: ok"
+              echo "### Deployed :rocket:" >> "$GITHUB_STEP_SUMMARY"
+              echo "- URL: $URL" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Image: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "live service did not report healthy"; exit 1

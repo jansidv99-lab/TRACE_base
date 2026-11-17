@@ -611,3 +611,44 @@ def test_ui_journey_end_to_end(journey):
     assert tiles["Cost avoided"] == f"${3 * per_call:.4f}"
     assert tiles["Risk gate approval"] == "50% (1/2)"
     assert tiles["Compliance gate approval"] == "100% (1/1)"
+
+
+# ===========================================================================
+# Phase 6 – Step 6.4: optional passcode gate for the public Cloud Run URL
+# ===========================================================================
+@pytest.fixture
+def gated(app, monkeypatch):
+    monkeypatch.setattr("src.config.APP_PASSCODE", "s3cret-code")
+    return app
+
+
+def _enter_passcode(at, value):
+    at.text_input(key="passcode_input").input(value)
+    at.button(key="passcode_submit").click().run()
+
+
+# Phase 6 – Step 6.4: with a passcode set, nothing of the app is shown until it is entered
+def test_passcode_gate_hides_app(gated):
+    gated.run()
+    assert not gated.exception
+    assert [t.value for t in gated.title] == ["TRACE – SAR Review"]
+    assert not gated.sidebar.text_input  # no reviewer box, no models, no cost
+    assert not gated.dataframe
+
+
+def test_wrong_passcode_rejected(gated):
+    gated.run()
+    _enter_passcode(gated, "guess")
+    assert any("Wrong passcode" in e.value for e in gated.error)
+    assert not gated.dataframe
+
+
+# Phase 6 – Step 6.4: the right passcode unlocks the session (and stays unlocked)
+def test_right_passcode_unlocks(gated):
+    gated.run()
+    _enter_passcode(gated, "s3cret-code")
+    assert not gated.exception
+    assert gated.title[0].value == "Case queue"
+    assert gated.sidebar.text_input[0].label == "Reviewer ID"
+    gated.run()  # a later rerun does not ask again
+    assert gated.title[0].value == "Case queue"

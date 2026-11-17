@@ -49,12 +49,17 @@ pytest                                       # unit tests; `llm`-marked tests ar
 pytest tests/test_foundation.py::test_name   # single test
 pytest -m llm                                # opt in to tests that call the real LLM
 streamlit run app/streamlit_app.py           # Phase 5 review UI (http://localhost:8501)
+
+docker build -t trace-sar .                  # Phase 6 container image (what Cloud Run runs)
+docker run --rm -p 8080:8080 --env-file .env trace-sar   # same app at http://localhost:8080
 ```
 
 `.env` keys: `OPENAI_API_KEY`, `OPENAI_BASE_URL` (OpenAI-compatible endpoint — pass it to the client,
 don't assume api.openai.com), `MODEL` (agents), `JUDGE_MODEL` (Phase 8 LLM-as-judge; must differ
-from `MODEL`; not in `.env` yet), `PROMPT_VERSION` (record it in audit logs), and
-`GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `REGION`, `GIT_REPO` for Phase 6 Cloud Run deployment.
+from `MODEL`; not in `.env` yet), `PROMPT_VERSION` (record it in audit logs; must match the prompt
+file names exactly, e.g. `V1` — Linux is case-sensitive), optional `APP_PASSCODE` (gates the UI when
+set), and `GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `REGION`, `GIT_REPO` for Phase 6 Cloud Run
+deployment.
 
 ## Architecture
 
@@ -77,7 +82,9 @@ project_data/*.csv → DataLoader → CaseData
 - Workflow logic lives in `src/sar_workflow.py` (shared by the notebook, Streamlit UI and tests);
   `notebooks/03_workflow_integration.ipynb` only demonstrates it.
 - `src/foundation_sar.py` holds all Pydantic schemas + `DataLoader` + `ExplainabilityLogger`.
-  Not yet created: `src/sar_workflow.py`, `notebooks/03_*.ipynb`, `tests/test_compliance_officer.py`.
+- `app/` is the Streamlit UI: a thin layer over `SARWorkflow` (`app/state.py` keeps the workflow in
+  `st.session_state`; tests inject stub/fake agents there). Pure display logic lives in
+  `app/ui_helpers.py`. Review screens show masked `T###` refs, never real transaction IDs.
 - Output contracts: risk classification ∈ {Structuring, Sanctions, Fraud, Money_Laundering, Other},
   confidence 0.0–1.0, risk level ∈ {Low, Medium, High, Critical}. SAR narrative must be **fewer than
   120 words** (`word_count < 120`; overrides the generic 100–200 guidance), must answer
@@ -110,6 +117,19 @@ deterministic check in `src/narrative_checks.py` passes (word count < 120, the 5
 no internal IDs, dates and amounts that match the case, citations from the `src/regulations.py`
 allowlist). A rejection is sent back to the model so it can revise. If the step budget runs out,
 the agent raises `ComplianceError`, and Stage 04 sends that case to manual review.
+
+### CI/CD (Stage 06)
+
+- **CI** (`.github/workflows/ci.yml`): `ruff check .` + `pytest` on every PR and push to `main`, on
+  Linux, with no secrets (`llm` tests skip themselves).
+- **CD** (`.github/workflows/cd.yml`): on PRs that touch the image inputs it only builds and
+  smoke-tests the container (`/_stcore/health`, no `.env` inside). After CI succeeds on `main` it
+  also pushes the image to Artifact Registry (tag = commit SHA) and runs `gcloud run deploy`
+  (public URL, max 1 instance). Login is keyless (Workload Identity Federation, `main` branch of this
+  repo only); the API key and optional `APP_PASSCODE` come from Secret Manager; all names are GitHub
+  repository variables.
+- GCP resources (`trace-sar-*`) are created by the developer from `plan/06-cicd-gcp/gcp_setup.md`.
+- Cloud Run's disk is temporary: the audit log and SAR files are lost on restart until Stage 08.
 
 ### Data (`project_data/`, not `data/` as `project_goal.md` says)
 
