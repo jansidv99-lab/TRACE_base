@@ -10,7 +10,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 01 – Foundation & data modeling | ✅ | `feature/foundation-schemas` (PR #2), `feature/foundation-data-exploration` (PR #3) merged |
 | 02 – Risk Analyst agent | ✅ | `feature/risk-analyst-agent` · PR #4 merged |
 | 03 – Compliance Officer agent | ✅ | `feature/compliance-officer-agent` · PR #5 merged |
-| 04 – Workflow integration & human gates | 🔄 in progress | `feature/sar-workflow` |
+| 04 – Workflow integration & human gates | ✅ implemented, PR pending | `feature/sar-workflow` |
 | 05 – Streamlit UI | ⏳ | – |
 | 06 – Test suite consolidation | ⏳ | – |
 | 07 – CI/CD to GCP | ⏳ | – |
@@ -81,7 +81,7 @@ Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-ag
 - Weak Risk Analyst calls flow through faithfully (GEO case classified Structuring on $4.8k/$7.4k deposits)
   → shows why the Stage 04 human gate matters.
 
-## Stage 04 – Workflow integration & human gates 🔄
+## Stage 04 – Workflow integration & human gates ✅ (PR pending)
 Plan: [`plan/04-workflow-integration/plan.md`](plan/04-workflow-integration/plan.md) — approved with all recommendations (sequential batch, PII in SAR file only, approve/reject only, all cases to the gate, tests before notebook)
 
 | Step | Status | Output |
@@ -92,7 +92,17 @@ Plan: [`plan/04-workflow-integration/plan.md`](plan/04-workflow-integration/plan
 | 4.4 SAR document generation | ✅ | `outputs/sars/<sar_id>.json` |
 | 4.5 Efficiency metrics | ✅ | `src/metrics.py` (cost per stage, cost avoided) |
 | 4.6 Integration tests | ✅ | `tests/test_workflow.py` |
-| 4.7 Integration notebook | ⏳ | `notebooks/03_workflow_integration.ipynb` |
+| 4.7 Integration notebook | ✅ | `notebooks/03_workflow_integration.ipynb` (8 real cases, 6 SARs, ~$0.035) |
+
+**Known findings (Stage 04):**
+- False-positive SAR: clean customer CUST_0003 rated Money_Laundering/Medium; the scripted reviewer
+  approves non-Low, so it was filed → exactly what a real human gate (Stage 05 UI) must catch.
+- Savings scale with the rejection rate: only 2 of 8 cases stopped at the risk gate → 22% saved
+  ($0.0097, 47 s). Better risk calibration (`V2` prompt) or a stricter reviewer policy would raise it.
+- Compliance costs ~6.3× risk per case ($0.00485 vs $0.00077; 23.7 s vs 9.1 s).
+- FREQ case rated Money_Laundering/Medium here vs Other/Low in Stage 02 → reproducibility topic for Stage 08.
+- Notebook projection to 119 active cases uses an approval rate that includes the free
+  zero-activity rejection → slightly optimistic; labelled as a rough assumption.
 
 ## Stage 05 – Streamlit UI ⏳
 | Step | Status |
