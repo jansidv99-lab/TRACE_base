@@ -69,7 +69,7 @@ Plan: [`plan/03-compliance-officer-agent/plan.md`](plan/03-compliance-officer-ag
 | 3.5 Tools: schemas + executor | ✅ | `src/compliance_tools.py` (4 tools, error observations instead of crashes) |
 | 3.6 ComplianceOfficerAgent ReACT loop | ✅ | `src/compliance_officer_agent.py` (live: 6 steps, accepted 95-word narrative) |
 | 3.7 Audit integration | ✅ | one audit event per call with summarised ReACT trace + validation report |
-| 3.8 Tests | ⏳ | `tests/test_compliance_officer.py` |
+| 3.8 Tests | ✅ | `tests/test_compliance_officer.py` (39 offline + 2 live, both live passed); `tool_call_response` fake |
 | 3.9 Demo notebook | ⏳ | `notebooks/03_compliance_officer_demo.ipynb` |
 
 **Known findings (Stage 03):**
