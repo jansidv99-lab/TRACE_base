@@ -234,6 +234,7 @@ class SARWorkflow:
     def record_compliance_decision(self, case_id: str, decision: HumanDecision) -> CaseRecord:
         record = self.get(case_id)
         self._check_gate(record, decision, "compliance", CaseStatus.COMPLIANCE_REVIEW)
+        self._check_segregation_of_duties(record, decision)
         approved = decision.decision == "approve"
         record.compliance_decision = decision
         sar = None
@@ -312,6 +313,17 @@ class SARWorkflow:
                 f"a '{decision.gate}' decision cannot be recorded at the {gate} gate"
             )
         self._require(record, expected, f"record a {gate} gate decision")
+
+    # Phase 5 – Step 5.1: segregation of duties (Stage 05 decision 2) — whoever decided the risk
+    # gate may not also decide the compliance gate (compared case-insensitively)
+    @staticmethod
+    def _check_segregation_of_duties(record: CaseRecord, decision: HumanDecision) -> None:
+        risk = record.risk_decision
+        if risk and risk.reviewer_id.casefold() == decision.reviewer_id.casefold():
+            raise WorkflowError(
+                f"segregation of duties: {decision.reviewer_id} already decided the risk gate "
+                f"for {record.case_id}; a different reviewer must decide the compliance gate"
+            )
 
     # Phase 4 – Step 4.3: one Human audit event per decision — approvals AND rejections
     def _log_decision(

@@ -236,7 +236,9 @@ def test_stage_stats_from_missing_run():
 # ===========================================================================
 # Phase 4 – Step 4.3: human decision gates and reviewer policies
 # ===========================================================================
-def _decision(gate, decision="approve", reason=None, reviewer="analyst_1"):
+# Phase 5 – Step 5.1: default reviewers differ per gate (segregation of duties)
+def _decision(gate, decision="approve", reason=None, reviewer=None):
+    reviewer = reviewer or ("analyst_1" if gate == "risk" else "officer_1")
     return HumanDecision(gate=gate, decision=decision, reviewer_id=reviewer, reason=reason)
 
 
@@ -290,6 +292,25 @@ def test_gate_guards(at_risk_gate, audit):
     wf.record_risk_decision(cid, _decision("risk"))
     with pytest.raises(WorkflowError, match="status is RISK_APPROVED"):
         wf.record_risk_decision(cid, _decision("risk"))
+
+
+# Phase 5 – Step 5.1: segregation of duties — the risk reviewer can't also decide compliance
+@pytest.mark.parametrize("same_id", ["analyst_1", "ANALYST_1"], ids=["exact", "case-insensitive"])
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+def test_segregation_of_duties(at_risk_gate, audit, same_id, decision):
+    wf, _, cid = at_risk_gate
+    wf.record_risk_decision(cid, _decision("risk", reviewer="analyst_1"))
+    wf.run_compliance(cid)
+    events_before = len(_records(audit[1]))
+    reason = "unclear" if decision == "reject" else None
+    with pytest.raises(WorkflowError, match="segregation of duties"):
+        wf.record_compliance_decision(cid, _decision("compliance", decision, reason, same_id))
+    rec = wf.get(cid)
+    assert rec.status == CaseStatus.COMPLIANCE_REVIEW and rec.compliance_decision is None
+    assert len(_records(audit[1])) == events_before  # refused: nothing logged
+    # a different reviewer can decide
+    wf.record_compliance_decision(cid, _decision("compliance", reviewer="officer_1"))
+    assert wf.get(cid).status == CaseStatus.SAR_FILED
 
 
 def test_decision_before_analysis_rejected(audit, sample_case):
@@ -639,7 +660,8 @@ def test_e2e_compliance_failure_to_manual_review(audit, three_txn_case):
 def test_e2e_metrics(audit, three_txn_case, second_case):
     low = _risk_reply(classification="Other", risk_level="Low")
     wf, _, _ = _e2e(audit, [_risk_reply(), low], _react_script())
-    wf.process([three_txn_case, second_case], ScriptedReviewer(), ScriptedReviewer())
+    wf.process([three_txn_case, second_case], ScriptedReviewer("analyst_1"),
+               ScriptedReviewer("officer_1"))
     m = wf.metrics()
     # fake replies: 100 prompt + 20 completion tokens each → $0.000027 per call on gpt-4o-mini
     per_call = 100 / 1e6 * 0.15 + 20 / 1e6 * 0.60
