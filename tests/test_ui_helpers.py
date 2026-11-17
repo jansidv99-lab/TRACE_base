@@ -9,14 +9,17 @@ from app.ui_helpers import (
     customer_profile,
     display_refs,
     estimate_risk_cost,
+    five_ws_line,
     masked,
+    narrative_report,
     next_new_cases,
     queue_rows,
     reasoning_steps,
     status_counts,
+    trace_rows,
     transaction_rows,
 )
-from src.foundation_sar import RiskAnalystOutput
+from src.foundation_sar import ComplianceOfficerOutput, RiskAnalystOutput
 from src.sar_workflow import CaseRecord, CaseStatus
 
 RISK = RiskAnalystOutput(classification="Fraud", confidence_score=0.7, risk_level="Medium",
@@ -127,3 +130,43 @@ def test_account_and_transaction_rows(reviewed):
 )
 def test_reasoning_steps(text, steps):
     assert reasoning_steps(text) == steps
+
+
+# ===========================================================================
+# Phase 5 – Step 5.4: compliance review helpers
+# ===========================================================================
+def test_narrative_report_and_five_ws(reviewed):
+    assert narrative_report(reviewed) is None  # no narrative yet
+    reviewed.compliance_output = ComplianceOfficerOutput(
+        narrative="Renee Blair made a transfer.", narrative_reasoning="r",
+        regulatory_citations=["31 U.S.C. 5318(g)"], completeness_check=True,
+    )
+    report = narrative_report(reviewed)
+    assert not report.passed  # no date, place or reason; no Fraud-specific citation
+    line = five_ws_line(report)
+    assert line.startswith("✅ who   ✅ what   ❌ when")
+
+
+def test_trace_rows():
+    trace = [
+        {"step": 1, "thought": None, "action": "get_transaction_details",
+         "arguments": {"refs": ["T001", "T009"]},
+         "observation": {"transactions": [{"ref": "T001"}], "unknown_refs": ["T009"]}},
+        {"step": 2, "thought": "Need the law.", "action": "lookup_regulations",
+         "arguments": {"typology": "Fraud"},
+         "observation": {"citations": [{"citation": "31 U.S.C. 5318(g)"}]}},
+        {"step": 3, "thought": None, "action": "check_narrative",
+         "arguments": {"narrative": "one two three", "citations": []},
+         "observation": {"passed": False, "word_count": 3, "errors": ["a", "b"]}},
+        {"step": 4, "thought": "plain text", "action": None, "arguments": None,
+         "observation": "no tool call"},
+        {"step": 5, "thought": None, "action": "lookup_regulations",
+         "arguments": {"typology": "X"}, "observation": {"error": "bad typology"}},
+    ]
+    rows = trace_rows(trace)
+    assert [r["observation"] for r in rows] == [
+        "1 found, unknown ['T009']", "31 U.S.C. 5318(g)", "rejected · 3 words · 2 error(s)",
+        "no tool call", "error: bad typology",
+    ]
+    assert "<draft, 3 words>" in rows[2]["arguments"]  # drafts are summarised, not dumped
+    assert rows[1]["thought"] == "Need the law." and rows[3]["action"] == "(text only)"

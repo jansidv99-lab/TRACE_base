@@ -121,6 +121,8 @@ class CaseRecord:
     compliance_decision: HumanDecision | None = None
     # Phase 4 – Step 4.4: real IDs of the transactions the compliance agent looked up
     looked_up_ids: list[str] = field(default_factory=list)
+    # Phase 5 – Step 5.4: the ReACT steps (masked T### refs) for the compliance review screen
+    compliance_trace: list[dict[str, Any]] = field(default_factory=list)
     sar_id: str | None = None
     sar_path: str | None = None
     error: str | None = None
@@ -201,9 +203,9 @@ class SARWorkflow:
             return record
         record.compliance_stats = self._stats(self.compliance_agent)
         record.compliance_output = output
-        record.looked_up_ids = _looked_up_ids(
-            record.case, getattr(self.compliance_agent, "last_run", None)
-        )
+        run = getattr(self.compliance_agent, "last_run", None)
+        record.looked_up_ids = _looked_up_ids(record.case, run)
+        record.compliance_trace = list(getattr(run, "trace", None) or [])
         self._move(record, CaseStatus.COMPLIANCE_REVIEW)
         return record
 

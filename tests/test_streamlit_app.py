@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from src.foundation_sar import ExplainabilityLogger
+from src.foundation_sar import (
+    ComplianceOfficerOutput,
+    ExplainabilityLogger,
+    HumanDecision,
+    count_words,
+)
 from src.sar_workflow import SARWorkflow
 from tests.test_workflow import StubComplianceAgent, StubRiskAgent
 
@@ -44,9 +49,10 @@ def cases(sample_case):
 
 
 # Phase 5 – Step 5.1: build an AppTest around a stub workflow (no browser, no API)
-def _app(tmp_path, cases, risk=None) -> tuple[AppTest, SARWorkflow]:
+# Phase 5 – Step 5.4: `compliance` lets a test choose the narrative stub
+def _app(tmp_path, cases, risk=None, compliance=None) -> tuple[AppTest, SARWorkflow]:
     logger = ExplainabilityLogger(tmp_path / "audit.jsonl")
-    workflow = SARWorkflow(risk or StubRiskAgent(), StubComplianceAgent(), logger,
+    workflow = SARWorkflow(risk or StubRiskAgent(), compliance or StubComplianceAgent(), logger,
                            output_dir=tmp_path / "outputs")
     for case in cases:
         workflow.add_case(case)
@@ -227,3 +233,119 @@ def test_risk_decision_refused(tmp_path, cases, reviewer, choice, message):
     assert not at.exception
     assert any(message in e.value for e in at.error)
     assert wf.get(cases[0].case_id).status == "RISK_REVIEW"
+
+
+# ===========================================================================
+# Phase 5 – Step 5.4: compliance review screen
+# ===========================================================================
+# Phase 5 – Step 5.4: passes every Stage 03 check for the conftest transaction (Feb 18, 2025)
+GOOD_NARRATIVE = ComplianceOfficerOutput(
+    narrative=(
+        "Renee Blair made an online transfer of $1,615.06 from a Money Market account at the "
+        "Westside Plaza branch on February 18, 2025. The transfer is inconsistent with the "
+        "customer's profile and forms part of an unusual pattern."
+    ),
+    narrative_reasoning="Built from TXN_B24455F3: who, what, when, where and why.",
+    regulatory_citations=["31 U.S.C. 5318(g)", "31 U.S.C. 5324"],
+    completeness_check=True,
+)
+TRACE = [
+    {"step": 1, "thought": None, "action": "get_transaction_details",
+     "arguments": {"refs": ["T001"]}, "observation": {"transactions": [{"ref": "T001"}]}},
+    {"step": 2, "thought": None, "action": "submit_narrative",
+     "arguments": {"narrative": GOOD_NARRATIVE.narrative, "citations": ["31 U.S.C. 5324"]},
+     "observation": {"accepted": True, "warnings": []}},
+]
+
+
+# Phase 5 – Step 5.4: first case approved at the risk gate by analyst_1; optionally narrated
+def _compliance_page(tmp_path, cases, narrate=True, reviewer="officer_1", compliance=None):
+    at, wf = _app(tmp_path, cases,
+                  compliance=compliance or StubComplianceAgent(result=GOOD_NARRATIVE, trace=TRACE))
+    cid = cases[0].case_id
+    wf.run_risk_analysis(cid)
+    wf.record_risk_decision(cid, HumanDecision(gate="risk", decision="approve",
+                                               reviewer_id="analyst_1"))
+    if narrate:
+        wf.run_compliance(cid)
+    at.session_state["reviewer_id"] = reviewer
+    at.run()
+    at.switch_page("views/compliance_review.py").run()
+    return at, wf
+
+
+def _submit_compliance(at, choice, reason=""):
+    at.radio(key="compliance_choice").set_value(choice)
+    at.text_area(key="compliance_reason").input(reason)
+    at.button(key="compliance_submit").click().run()
+
+
+def test_compliance_page_empty(app):
+    app.run()
+    app.switch_page("views/compliance_review.py").run()
+    assert not app.exception
+    captions = " ".join(c.value for c in app.caption)
+    assert "No cases approved" in captions and "No narratives waiting" in captions
+    assert "No agent failures" in captions
+
+
+# Phase 5 – Step 5.4: generate a narrative for a risk-approved case
+def test_generate_narrative(tmp_path, cases):
+    at, wf = _compliance_page(tmp_path, cases, narrate=False)
+    at.button(key="narrate").click().run()
+    assert not at.exception
+    assert wf.get(cases[0].case_id).status == "COMPLIANCE_REVIEW"
+    assert any("narrative ready after 5 ReACT step(s)" in s.value for s in at.success)
+
+
+# Phase 5 – Step 5.4: the narrative, checks, citations and trace are shown for review
+def test_compliance_review_shows_checks(tmp_path, cases):
+    at, wf = _compliance_page(tmp_path, cases)
+    assert not at.exception
+    words = count_words(GOOD_NARRATIVE.narrative)
+    assert [m.value for m in at.main.metric] == [f"{words} / <120", "passed", "0"]
+    text = " ".join(m.value for m in at.markdown)
+    assert "Renee Blair made an online transfer" in text
+    assert "✅ who" in text and "❌" not in text
+    assert "T001" in text and "TXN_B24455F3" not in text  # reasoning shown with masked refs
+    assert any("approved by **analyst_1**" in c.value for c in at.caption)
+    trace = at.dataframe[0].value
+    assert list(trace["action"]) == ["get_transaction_details", "submit_narrative"]
+    assert list(trace["observation"]) == ["1 found", "accepted"]
+
+
+# Phase 5 – Step 5.4: a different reviewer approves → SAR filed
+def test_compliance_approve_files_sar(tmp_path, cases):
+    at, wf = _compliance_page(tmp_path, cases)
+    _submit_compliance(at, "approve")
+    rec = wf.get(cases[0].case_id)
+    assert rec.status == "SAR_FILED" and Path(rec.sar_path).exists()
+    assert any("approve recorded by officer_1" in s.value for s in at.success)
+
+
+# Phase 5 – Step 5.4: the risk reviewer cannot also decide here (segregation of duties)
+def test_compliance_same_reviewer_refused(tmp_path, cases):
+    at, wf = _compliance_page(tmp_path, cases, reviewer="analyst_1")
+    _submit_compliance(at, "approve")
+    assert not at.exception
+    assert any("segregation of duties" in e.value for e in at.error)
+    assert wf.get(cases[0].case_id).status == "COMPLIANCE_REVIEW"
+
+
+def test_compliance_reject_with_reason(tmp_path, cases):
+    at, wf = _compliance_page(tmp_path, cases)
+    _submit_compliance(at, "reject", "narrative overstates the pattern")
+    rec = wf.get(cases[0].case_id)
+    assert rec.status == "CLOSED_COMPLIANCE_REJECTED" and rec.sar_path is None
+
+
+# Phase 5 – Step 5.4: an agent failure is listed under manual review
+def test_manual_review_listed(tmp_path, cases):
+    at, wf = _compliance_page(tmp_path, cases, narrate=False,
+                              compliance=StubComplianceAgent(error="step budget exhausted"))
+    at.button(key="narrate").click().run()
+    assert wf.get(cases[0].case_id).status == "MANUAL_REVIEW"
+    assert any("manual review" in e.value for e in at.error)
+    manual = at.dataframe[-1].value
+    assert list(manual["failed_stage"]) == ["compliance"]
+    assert "step budget exhausted" in manual["error"][0]

@@ -6,6 +6,7 @@ Planted transaction-ID prefixes (STRUCT_, LARGE_, ...) are the answer key of the
 are never part of any row shown to a reviewer.
 """
 
+import json
 import re
 from collections.abc import Iterable
 from datetime import date
@@ -13,6 +14,7 @@ from typing import Any
 
 from src.case_formatter import format_case_for_llm, remask
 from src.foundation_sar import CaseData
+from src.narrative_checks import NarrativeReport, check_narrative
 from src.sar_workflow import CaseRecord, CaseStatus
 
 # Phase 5 – Step 5.2: measured Stage 04 average per risk analysis (gpt-4o-mini, assumed prices);
@@ -146,3 +148,66 @@ def transaction_rows(case: CaseData, cited: set[str]) -> list[dict[str, Any]]:
 def reasoning_steps(text: str) -> list[str]:
     parts = [p.strip() for p in _STEP.split(text or "") if p.strip()]
     return parts or [text]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 – Step 5.4: compliance review
+# ---------------------------------------------------------------------------
+FIVE_WS = ("who", "what", "when", "where", "why")
+
+
+# Phase 5 – Step 5.4: re-run the Stage 03 checks on the narrative awaiting review
+def narrative_report(rec: CaseRecord) -> NarrativeReport | None:
+    out, risk = rec.compliance_output, rec.risk_output
+    if out is None or risk is None:
+        return None
+    return check_narrative(out.narrative, out.regulatory_citations, rec.case, risk.classification)
+
+
+# Phase 5 – Step 5.4: "✅ who  ❌ when ..." from a report's five_ws dict
+def five_ws_line(report: NarrativeReport) -> str:
+    return "   ".join(f"{'✅' if report.five_ws.get(w) else '❌'} {w}" for w in FIVE_WS)
+
+
+# Phase 5 – Step 5.4: short, readable text for one tool call's arguments or result
+def _short(value: Any, limit: int = 90) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _observation_text(action: str | None, obs: Any) -> str:
+    if not isinstance(obs, dict):
+        return _short(obs)
+    if "error" in obs:
+        return f"error: {_short(obs['error'])}"
+    if action == "get_transaction_details":
+        found = [t.get("ref") for t in obs.get("transactions", [])]
+        unknown = obs.get("unknown_refs")
+        return f"{len(found)} found" + (f", unknown {unknown}" if unknown else "")
+    if action == "lookup_regulations":
+        return ", ".join(c.get("citation", "") for c in obs.get("citations", []))
+    if action in ("check_narrative", "submit_narrative"):
+        status = "accepted" if obs.get("accepted") else (
+            "passed" if obs.get("passed") else "rejected"
+        )
+        errors = obs.get("errors") or []
+        words = f" · {obs['word_count']} words" if "word_count" in obs else ""
+        return status + words + (f" · {len(errors)} error(s)" if errors else "")
+    return _short(obs)
+
+
+# Phase 5 – Step 5.4: one row per ReACT step (Thought → Action → Observation)
+def trace_rows(trace: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for step in trace:
+        args = step.get("arguments")
+        if isinstance(args, dict) and "narrative" in args:
+            args = {**args, "narrative": f"<draft, {len(str(args['narrative']).split())} words>"}
+        rows.append({
+            "step": step.get("step"),
+            "thought": step.get("thought") or "",
+            "action": step.get("action") or "(text only)",
+            "arguments": _short(args) if args is not None else "",
+            "observation": _observation_text(step.get("action"), step.get("observation")),
+        })
+    return rows
