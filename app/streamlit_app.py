@@ -7,6 +7,7 @@ Every page is a thin layer over `src/sar_workflow.py`: buttons call workflow met
 Stage 04 state machine, gate rules, audit events and SAR validation apply unchanged.
 """
 
+import hmac
 import sys
 from pathlib import Path
 
@@ -19,8 +20,30 @@ if str(ROOT) not in sys.path:
 import streamlit as st  # noqa: E402
 
 from app.state import REVIEWER_KEY, get_workflow, reviewer_id  # noqa: E402
+from src import config  # noqa: E402
 
 st.set_page_config(page_title="TRACE – SAR Review", layout="wide")
+
+PASSCODE_OK_KEY = "passcode_ok"
+
+
+# Phase 6 – Step 6.4: optional passcode gate for the public URL (Stage 06 decision Q1).
+# Runs before anything else, so no cases, agents or API calls are touched until it passes.
+def passcode_gate() -> None:
+    expected = config.APP_PASSCODE
+    if not expected or st.session_state.get(PASSCODE_OK_KEY):
+        return
+    st.title("TRACE – SAR Review")
+    with st.form("passcode_form"):
+        entered = st.text_input("Passcode", type="password", key="passcode_input")
+        submitted = st.form_submit_button("Enter", type="primary", key="passcode_submit")
+    if submitted:
+        # constant-time comparison: the response time does not reveal how much was right
+        if hmac.compare_digest(entered.encode(), expected.encode()):
+            st.session_state[PASSCODE_OK_KEY] = True
+            st.rerun()
+        st.error("Wrong passcode.")
+    st.stop()
 
 # Phase 5 – Step 5.1: one page per screen (Stage 05 plan, Steps 5.2–5.6)
 PAGES = [
@@ -57,5 +80,6 @@ def render_sidebar() -> None:
         st.metric("Session cost (est.)", f"${workflow.metrics().total_cost_usd:.4f}")
 
 
+passcode_gate()
 render_sidebar()
 st.navigation(PAGES).run()

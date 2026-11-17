@@ -138,7 +138,7 @@ Note (developer, `project_goal.md`): same GCP account, separate resources for th
 | 6.1 CI workflow (GitHub Actions) | ✅ (PR #8, green on GitHub) |
 | 6.2 Dockerfile + CD pipeline (`cd.yml`: build & smoke test) | 🔄 |
 | 6.3 GCP setup (Artifact Registry, Secret Manager, WIF) | 🔄 runbook `plan/06-cicd-gcp/gcp_setup.md` written; developer runs it |
-| 6.4 CD deploy job (Cloud Run) | ⏳ |
+| 6.4 CD deploy job (Cloud Run) + optional passcode gate | 🔄 |
 
 ## Stage 07 – Test suite consolidation ⏳
 Was Stage 06.
