@@ -219,7 +219,7 @@ Plan: [`plan/09-walkthrough-fixes/plan.md`](plan/09-walkthrough-fixes/plan.md) �
 
 | Step | Fixes | Status |
 |---|---|---|
-| 9.1 Small fixes: CD variable check, runbook block 8 from `.env`, `*.stackdump`, deploy only on image changes | #1 #2 #3 #7 | ⏳ |
+| 9.1 Small fixes: CD variable check, runbook block 8 from `.env`, `*.stackdump`, deploy only on image changes | #1 #2 #3 #7 | 🔄 |
 | 9.2 Reason required at both gates | #5 | ⏳ |
 | 9.3 Compliance prompt V2 + declared supporting transactions | #4 | ⏳ |
 | 9.4 Risk prompt V2 (calibration) + V1-vs-V2 comparison | #6 | ⏳ |

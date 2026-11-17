@@ -4,7 +4,9 @@
 # CI (ci.yml) answers "is the code correct?"; CD (this file) answers "can we ship it?".
 #
 #   pull request to main ─► build + smoke-test the image only (catches a broken Dockerfile early)
-#   CI succeeded on main ─► build + smoke-test ─► (Step 6.4) push ─► deploy to Cloud Run
+#   CI succeeded on main ─► image inputs changed? (Step 9.1) ─► build + smoke-test ─► validate
+#                           variables ─► push ─► deploy to Cloud Run   (docs-only merges stop early)
+#   manual "Run workflow" on main ─► always build + deploy (e.g. after a config/variable fix)
 #
 # Note: GitHub only starts `workflow_run` workflows from the default branch, so the
 # "after CI on main" path becomes active once this file is merged.
@@ -17,6 +19,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # Image inputs — keep this list in sync with IMAGE_INPUTS in the `changes` job below
     paths:
       - Dockerfile
       - .dockerignore
@@ -37,10 +40,57 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Phase 9 – Step 9.1 (fix #7): deploy only when something that goes into the image changed.
+  # The workflow_run trigger cannot be path-filtered, so without this every merge to main —
+  # even docs-only — redeployed, ending open review sessions and wiping Cloud Run's temporary
+  # audit log and SAR files.
+  # Assumes PRs are merged with merge commits (gh pr merge --merge): then HEAD^1..HEAD is the
+  # whole PR. A rebase-merge of several commits could hide changes in the earlier ones.
+  changes:
+    name: Did the image inputs change?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.diff.outputs.image }}
+    steps:
+      - name: Check out the commit and its parent
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2
+
+      - id: diff
+        name: Compare the image inputs with the previous commit
+        env:
+          # keep in sync with the pull_request `paths:` filter above
+          IMAGE_INPUTS: >-
+            Dockerfile .dockerignore requirements.txt app src project_data .streamlit
+            .github/workflows/cd.yml
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
+            # PRs are already path-filtered; a manual "Run workflow" always deploys (config fixes)
+            echo "image=true" >> "$GITHUB_OUTPUT"
+            echo "${{ github.event_name }} run: continue"
+            exit 0
+          fi
+          # shellcheck disable=SC2086  # IMAGE_INPUTS is a deliberate word list
+          CHANGED="$(git diff --name-only HEAD^1 HEAD -- $IMAGE_INPUTS)"
+          if [ -n "$CHANGED" ]; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+            echo "Image inputs changed:"; echo "$CHANGED"
+          else
+            echo "image=false" >> "$GITHUB_OUTPUT"
+            echo "No image inputs changed - nothing to build or deploy."
+            echo "### Nothing to deploy - no image inputs changed in this merge" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
     name: Build and smoke-test container
-    # After CI on main: only if CI passed. PRs and manual runs: always.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    needs: changes
+    # Only when the image inputs changed (fix #7), and after CI on main only if CI passed.
+    if: >-
+      needs.changes.outputs.image == 'true' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -90,6 +140,47 @@ jobs:
       # one image per commit: the tag says exactly which code is running (rollback = redeploy a tag)
       IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.AR_REPO }}/trace-sar:${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
+      # Phase 9 – Step 9.1 (fix #1): catch bad configuration here, not at the first user click.
+      # The first live run deployed a placeholder OPENAI_BASE_URL and every LLM call then failed.
+      - name: Validate deployment variables (fail fast on empty or placeholder values)
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          AR_REPO: ${{ vars.AR_REPO }}
+          CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+          WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+          DEPLOYER_SA: ${{ vars.DEPLOYER_SA }}
+          RUNTIME_SA: ${{ vars.RUNTIME_SA }}
+          KEY_SECRET: ${{ vars.KEY_SECRET }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          MODEL: ${{ vars.MODEL }}
+          PROMPT_VERSION: ${{ vars.PROMPT_VERSION }}
+          PASSCODE_SECRET: ${{ vars.PASSCODE_SECRET }}   # optional; checked only when set
+        run: |
+          errors=0
+          fail() { echo "::error::$1"; errors=1; }
+          for name in GCP_PROJECT_ID GCP_REGION AR_REPO CLOUD_RUN_SERVICE WIF_PROVIDER \
+                      DEPLOYER_SA RUNTIME_SA KEY_SECRET OPENAI_BASE_URL MODEL PROMPT_VERSION; do
+            value="${!name}"
+            if [ -z "$value" ]; then
+              fail "repository variable $name is empty (runbook gcp_setup.md, block 8)"
+            elif printf '%s' "$value" | grep -q "[<>\"']"; then
+              fail "repository variable $name contains placeholder or quote characters"
+            fi
+          done
+          if [ -n "$PASSCODE_SECRET" ] && printf '%s' "$PASSCODE_SECRET" | grep -q "[<>\"']"; then
+            fail "repository variable PASSCODE_SECRET contains placeholder or quote characters"
+          fi
+          case "$OPENAI_BASE_URL" in
+            https://*) ;;
+            *) fail "OPENAI_BASE_URL must start with https://" ;;
+          esac
+          if ! printf '%s' "$PROMPT_VERSION" | grep -Eq '^V[0-9]+$'; then
+            fail "PROMPT_VERSION must look like V1, V2, ... (it names src/prompts/*_<version>.md)"
+          fi
+          if [ "$errors" -ne 0 ]; then exit 1; fi
+          echo "All deployment variables look valid."
+
       - name: Check out the code CI tested
         uses: actions/checkout@v4
         with:

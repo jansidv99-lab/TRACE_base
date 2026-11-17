@@ -219,8 +219,22 @@ None of these is secret: the key stays in Secret Manager, and WIF replaces store
 Set them in **GitHub → Settings → Secrets and variables → Actions → Variables**, or with the
 `gh` CLI:
 
+The three app settings are read from your `.env` (run this from the repo root), with the quotes
+removed, so no placeholder text can slip through (Stage 09 fix #2; the first live run failed on a
+copied placeholder). Look at the three printed values before setting anything:
+
 ```bash
 : "${WIF_PROVIDER:?run block 6 first}" "${DEPLOY_SA_EMAIL:?run block 0 first}" "${RUN_SA_EMAIL:?run block 0 first}"
+env_value() { grep -E "^$1=" .env | head -1 | cut -d= -f2- | tr -d '"'"'"'\r'; }
+export APP_BASE_URL="$(env_value OPENAI_BASE_URL)" APP_MODEL="$(env_value MODEL)" APP_PROMPT="$(env_value PROMPT_VERSION)"
+printf 'OPENAI_BASE_URL=%s\nMODEL=%s\nPROMPT_VERSION=%s\n' "$APP_BASE_URL" "$APP_MODEL" "$APP_PROMPT"
+: "${APP_BASE_URL:?OPENAI_BASE_URL missing in .env}" "${APP_MODEL:?MODEL missing in .env}" "${APP_PROMPT:?PROMPT_VERSION missing in .env}"
+```
+
+Expected: the URL starts with `https://`, the model is e.g. `gpt-4o-mini`, the version is `V1`, `V2`,
+… — no quotes, no `<…>`. Then set all variables:
+
+```bash
 gh variable set GCP_PROJECT_ID  --repo "$GITHUB_REPO" --body "$PROJECT_ID"
 gh variable set GCP_REGION      --repo "$GITHUB_REPO" --body "$REGION"
 gh variable set AR_REPO         --repo "$GITHUB_REPO" --body "$AR_REPO"
@@ -230,12 +244,14 @@ gh variable set DEPLOYER_SA     --repo "$GITHUB_REPO" --body "$DEPLOY_SA_EMAIL"
 gh variable set RUNTIME_SA      --repo "$GITHUB_REPO" --body "$RUN_SA_EMAIL"
 gh variable set KEY_SECRET      --repo "$GITHUB_REPO" --body "$KEY_SECRET"
 gh variable set PASSCODE_SECRET --repo "$GITHUB_REPO" --body "$PASSCODE_SECRET"   # or "" if skipped
-gh variable set OPENAI_BASE_URL --repo "$GITHUB_REPO" --body "<OPENAI_BASE_URL from .env>"
-gh variable set MODEL           --repo "$GITHUB_REPO" --body "gpt-4o-mini"
-gh variable set PROMPT_VERSION  --repo "$GITHUB_REPO" --body "V1"
+gh variable set OPENAI_BASE_URL --repo "$GITHUB_REPO" --body "$APP_BASE_URL"
+gh variable set MODEL           --repo "$GITHUB_REPO" --body "$APP_MODEL"
+gh variable set PROMPT_VERSION  --repo "$GITHUB_REPO" --body "$APP_PROMPT"
 ```
 
-**Check:** `gh variable list --repo "$GITHUB_REPO"` shows 12 variables.
+**Check:** `gh variable list --repo "$GITHUB_REPO"` shows 12 variables. The CD deploy job also
+validates them before every deploy (empty, placeholder or quote characters, a non-`https://` URL,
+a version not shaped like `V1`) and stops with a clear message if one is wrong.
 
 ---
 
