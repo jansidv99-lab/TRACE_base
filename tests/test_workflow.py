@@ -4,6 +4,8 @@ routing, stats). Step 4.6 adds end-to-end tests with the real agents on FakeLLMC
 """
 
 import json
+from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +19,7 @@ from src.foundation_sar import (
     ExplainabilityLogger,
     HumanDecision,
     RiskAnalystOutput,
+    SARDocument,
     TransactionData,
 )
 from src.risk_analyst_agent import RiskAnalysisError
@@ -30,6 +33,8 @@ from src.sar_workflow import (
     ScriptedReviewer,
     StageStats,
     WorkflowError,
+    build_sar,
+    involved_transactions,
 )
 
 RISK = RiskAnalystOutput(
@@ -65,8 +70,10 @@ class StubRiskAgent:
 class StubComplianceAgent:
     prompt_version = "V1"
 
-    def __init__(self, result=NARRATIVE, error: str | None = None) -> None:
+    # Phase 4 – Step 4.4: `trace` mimics NarrativeRun.trace (tool calls with masked refs)
+    def __init__(self, result=NARRATIVE, error: str | None = None, trace=None) -> None:
         self.result, self.error, self.calls = result, error, 0
+        self.trace = trace or []
 
     def generate_compliance_narrative(self, case, risk_output):
         self.calls += 1
@@ -74,7 +81,7 @@ class StubComplianceAgent:
         self.last_run = SimpleNamespace(
             model="fake-model", token_usage={"prompt_tokens": 5000, "completion_tokens": 200,
                                              "total_tokens": 5200},
-            latency_ms=20000.0, attempts=5, steps=5,
+            latency_ms=20000.0, attempts=5, steps=5, trace=self.trace,
         )
         if self.error:
             raise ComplianceError(case.case_id, self.error, 8)
@@ -87,8 +94,12 @@ def audit(tmp_path):
     return ExplainabilityLogger(path), path
 
 
+# Phase 4 – Step 4.4: SARs go to a temp folder next to the audit log, never the real outputs/
 def _workflow(audit, risk=None, compliance=None):
-    return SARWorkflow(risk or StubRiskAgent(), compliance or StubComplianceAgent(), audit[0])
+    return SARWorkflow(
+        risk or StubRiskAgent(), compliance or StubComplianceAgent(), audit[0],
+        output_dir=audit[1].parent / "outputs",
+    )
 
 
 def _records(path) -> list[dict]:
@@ -303,8 +314,7 @@ def test_compliance_gate(at_risk_gate, audit, decision, reason, status):
         cid, _decision("compliance", decision, reason, "officer_1")
     )
     assert rec.status == status and rec.is_final
-    event = _records(audit[1])[-1]
-    assert event["action"] == "compliance_gate_decision"
+    event = next(e for e in _records(audit[1]) if e["action"] == "compliance_gate_decision")
     assert event["reviewer_id"] == "officer_1"
     assert event["input_summary"]["citations"] == ["31 U.S.C. 5318(g)"]
 
@@ -341,6 +351,7 @@ def test_process_runs_only_approved_cases(audit, sample_case, second_case):
     assert actions == [
         ("CUST_0002", "risk_gate_decision"),
         ("CUST_0002", "compliance_gate_decision"),
+        ("CUST_0002", "sar_generated"),  # Phase 4 – Step 4.4
         ("CUST_0003", "risk_gate_decision"),
     ]
 
@@ -382,3 +393,117 @@ def test_console_reviewer(at_risk_gate):
     assert any("Please type" in p for p in printed)
     approve = ConsoleReviewer("me", input_fn=lambda _prompt: "a", print_fn=lambda *a: None)
     assert approve.review(wf.get(cid), "risk").decision == "approve"
+
+
+# ===========================================================================
+# Phase 4 – Step 4.4: SAR document generation
+# ===========================================================================
+TXN_IDS = ("STRUCT_7D3B8E94", "STRUCT_1A2B3C4D", "STRUCT_5E6F7A8B")
+
+
+# Phase 4 – Step 4.4: three cash deposits; T001..T003 map to TXN_IDS in date order
+@pytest.fixture
+def three_txn_case(sample_case, transaction_row) -> CaseData:
+    days = [("2025-03-03", "9800.00"), ("2025-03-05", "9500.00"), ("2025-03-07", "9900.00")]
+    txns = [
+        TransactionData(**{**transaction_row, "transaction_id": tid, "transaction_date": day,
+                           "amount": amount, "transaction_type": "Cash_Deposit",
+                           "method": "Cash"})
+        for tid, (day, amount) in zip(TXN_IDS, days, strict=True)
+    ]
+    return sample_case.model_copy(update={"transactions": txns})
+
+
+# Phase 4 – Step 4.4: drive one case through both approvals
+def _file(audit, case, risk=RISK, compliance=None):
+    wf = _workflow(audit, risk=StubRiskAgent(result=risk), compliance=compliance)
+    wf.add_case(case)
+    wf.run_risk_analysis(case.case_id)
+    wf.record_risk_decision(case.case_id, _decision("risk"))
+    wf.run_compliance(case.case_id)
+    return wf, wf.record_compliance_decision(
+        case.case_id, _decision("compliance", reviewer="officer_1")
+    )
+
+
+# Phase 4 – Step 4.4: approval writes a valid SAR file and a sar_generated audit event
+def test_sar_written_on_approval(audit, sample_case):
+    _, rec = _file(audit, sample_case)
+    path = Path(rec.sar_path)
+    assert path.parent == audit[1].parent / "outputs" / "sars"
+    sar = SARDocument.model_validate_json(path.read_text(encoding="utf-8"))
+    assert sar.sar_id == rec.sar_id == path.stem
+    assert sar.subject.name == "Renee Blair"
+    assert sar.activity.transaction_ids == ["TXN_B24455F3"]
+    assert sar.activity.typology == "Structuring"
+    assert (sar.risk_review.reviewer_id, sar.compliance_review.reviewer_id) == (
+        "analyst_1", "officer_1"
+    )
+    assert sar.provenance.risk_model == "fake-model"
+    assert sar.provenance.compliance_prompt_version == "V1"
+    event = _records(audit[1])[-1]
+    assert event["agent_type"] == "Workflow" and event["action"] == "sar_generated"
+    assert event["output"]["sar_id"] == rec.sar_id
+    assert event["output"]["path"].endswith(f"{rec.sar_id}.json")
+
+
+# Phase 4 – Step 4.4: rejection at the compliance gate writes no SAR
+def test_no_sar_on_compliance_rejection(audit, sample_case):
+    wf = _workflow(audit)
+    wf.add_case(sample_case)
+    wf.run_risk_analysis(sample_case.case_id)
+    wf.record_risk_decision(sample_case.case_id, _decision("risk"))
+    wf.run_compliance(sample_case.case_id)
+    rec = wf.record_compliance_decision(
+        sample_case.case_id, _decision("compliance", "reject", "facts unclear")
+    )
+    assert rec.sar_path is None
+    assert not (audit[1].parent / "outputs").exists()
+
+
+# Phase 4 – Step 4.4: involved = IDs in the risk finding + refs the agent looked up (unmasked)
+def test_involved_transactions_combine_sources(audit, three_txn_case):
+    risk = RISK.model_copy(update={"key_indicators": [f"{TXN_IDS[0]} just under $10,000"]})
+    trace = [{"step": 1, "action": "get_transaction_details",
+              "arguments": {"refs": ["t003", "T999"]}, "observation": {}}]
+    _, rec = _file(audit, three_txn_case, risk=risk,
+                   compliance=StubComplianceAgent(trace=trace))
+    assert rec.looked_up_ids == [TXN_IDS[2]]  # T999 is unknown and ignored
+    sar = SARDocument.model_validate_json(Path(rec.sar_path).read_text(encoding="utf-8"))
+    assert sar.activity.transaction_ids == [TXN_IDS[0], TXN_IDS[2]]  # not the middle one
+    assert (str(sar.activity.start_date), str(sar.activity.end_date)) == (
+        "2025-03-03", "2025-03-07"
+    )
+    assert sar.activity.total_amount == 19700.00
+
+
+# Phase 4 – Step 4.4: if nothing names a transaction, the SAR covers the whole case
+def test_involved_transactions_fallback(audit, three_txn_case):
+    risk = RISK.model_copy(update={"key_indicators": ["deposits just under $10,000"],
+                                   "reasoning": "no IDs quoted"})
+    _, rec = _file(audit, three_txn_case, risk=risk)
+    assert [t.transaction_id for t in involved_transactions(rec)] == list(TXN_IDS)
+
+
+# Phase 4 – Step 4.4: a SAR that can't be built leaves the case at the compliance gate
+def test_unbuildable_sar_changes_nothing(audit, sample_case):
+    empty = sample_case.model_copy(update={"transactions": []})
+    wf = _workflow(audit)
+    wf.add_case(empty)
+    wf.run_risk_analysis(empty.case_id)
+    wf.record_risk_decision(empty.case_id, _decision("risk"))
+    wf.run_compliance(empty.case_id)
+    events_before = len(_records(audit[1]))
+    with pytest.raises(WorkflowError, match="cannot build a SAR"):
+        wf.record_compliance_decision(empty.case_id, _decision("compliance"))
+    rec = wf.get(empty.case_id)
+    assert rec.status == CaseStatus.COMPLIANCE_REVIEW
+    assert rec.compliance_decision is None and rec.sar_path is None
+    assert len(_records(audit[1])) == events_before
+
+
+# Phase 4 – Step 4.4: sar_id = customer + UTC generation time
+def test_build_sar_id(audit, sample_case):
+    wf, rec = _file(audit, sample_case)
+    sar = build_sar(rec, generated_at=datetime(2026, 11, 17, 9, 30, 5, tzinfo=UTC))
+    assert sar.sar_id == "SAR_CUST_0002_20261117093005"

@@ -25,8 +25,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+
+from src import config
+from src.case_formatter import format_case_for_llm
 from src.compliance_officer_agent import ComplianceError
 from src.foundation_sar import (
     CaseData,
@@ -34,6 +39,10 @@ from src.foundation_sar import (
     ExplainabilityLogger,
     HumanDecision,
     RiskAnalystOutput,
+    SARDocument,
+    SARProvenance,
+    SuspiciousActivity,
+    TransactionData,
     count_words,
 )
 from src.risk_analyst_agent import RiskAnalysisError
@@ -109,6 +118,8 @@ class CaseRecord:
     compliance_output: ComplianceOfficerOutput | None = None
     compliance_stats: StageStats | None = None
     compliance_decision: HumanDecision | None = None
+    # Phase 4 – Step 4.4: real IDs of the transactions the compliance agent looked up
+    looked_up_ids: list[str] = field(default_factory=list)
     sar_id: str | None = None
     sar_path: str | None = None
     error: str | None = None
@@ -131,12 +142,18 @@ class CaseRecord:
 # Phase 4 – Step 4.2: the orchestrator; agents and logger are injected (real or fakes)
 class SARWorkflow:
     # Phase 4 – Step 4.2: both agents should share `logger` so the audit trail is one file
+    # Phase 4 – Step 4.4: SARs are written to <output_dir>/sars/ (default: git-ignored outputs/)
     def __init__(
-        self, risk_agent: Any, compliance_agent: Any, logger: ExplainabilityLogger
+        self,
+        risk_agent: Any,
+        compliance_agent: Any,
+        logger: ExplainabilityLogger,
+        output_dir: str | Path | None = None,
     ) -> None:
         self.risk_agent = risk_agent
         self.compliance_agent = compliance_agent
         self.logger = logger
+        self.output_dir = Path(output_dir) if output_dir else config.PROJECT_ROOT / "outputs"
         self.records: dict[str, CaseRecord] = {}
 
     # Phase 4 – Step 4.2: register a case; each case_id may be added only once
@@ -183,6 +200,9 @@ class SARWorkflow:
             return record
         record.compliance_stats = self._stats(self.compliance_agent)
         record.compliance_output = output
+        record.looked_up_ids = _looked_up_ids(
+            record.case, getattr(self.compliance_agent, "last_run", None)
+        )
         self._move(record, CaseStatus.COMPLIANCE_REVIEW)
         return record
 
@@ -208,12 +228,20 @@ class SARWorkflow:
         return record
 
     # Phase 4 – Step 4.3: human compliance gate; COMPLIANCE_REVIEW → SAR_FILED or
-    # CLOSED_COMPLIANCE_REJECTED (Step 4.4 writes the SAR document on approval)
+    # CLOSED_COMPLIANCE_REJECTED
+    # Phase 4 – Step 4.4: approval builds and writes the SAR; if it can't be built, nothing changes
     def record_compliance_decision(self, case_id: str, decision: HumanDecision) -> CaseRecord:
         record = self.get(case_id)
         self._check_gate(record, decision, "compliance", CaseStatus.COMPLIANCE_REVIEW)
-        record.compliance_decision = decision
         approved = decision.decision == "approve"
+        record.compliance_decision = decision
+        sar = None
+        if approved:
+            try:
+                sar = build_sar(record)
+            except (ValidationError, ValueError) as exc:
+                record.compliance_decision = None
+                raise WorkflowError(f"cannot build a SAR for {record.case_id}: {exc}") from exc
         self._move(
             record, CaseStatus.SAR_FILED if approved else CaseStatus.CLOSED_COMPLIANCE_REJECTED
         )
@@ -226,7 +254,29 @@ class SARWorkflow:
                 "citations": out.regulatory_citations,
             },
         )
+        if sar is not None:
+            self._write_sar(record, sar)
         return record
+
+    # Phase 4 – Step 4.4: save the SAR as JSON and audit it
+    def _write_sar(self, record: CaseRecord, sar: SARDocument) -> None:
+        sar_dir = self.output_dir / "sars"
+        sar_dir.mkdir(parents=True, exist_ok=True)
+        path = sar_dir / f"{sar.sar_id}.json"
+        path.write_text(sar.model_dump_json(indent=2), encoding="utf-8")
+        record.sar_id, record.sar_path = sar.sar_id, str(path)
+        self.logger.log_agent_action(
+            agent_type="Workflow",
+            action="sar_generated",
+            case_id=record.case_id,
+            input_data={
+                "typology": sar.activity.typology,
+                "transactions": len(sar.activity.transaction_ids),
+            },
+            output_data={"sar_id": sar.sar_id, "path": path},
+            reasoning="SAR generated after approval at both human gates.",
+            execution_time_ms=0.0,
+        )
 
     # Phase 4 – Step 4.3: run the whole flow for many cases, asking the reviewers at each gate
     def process(
@@ -401,3 +451,71 @@ class ConsoleReviewer:
                     gate=gate, decision="reject", reviewer_id=self.reviewer_id, reason=reason
                 )
             self.print("Please type 'a' or 'r'.")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 – Step 4.4: SAR document generation
+# ---------------------------------------------------------------------------
+# Phase 4 – Step 4.4: real IDs behind the T### refs the compliance agent looked up
+def _looked_up_ids(case: CaseData, run: Any) -> list[str]:
+    id_map = format_case_for_llm(case).id_map
+    ids: list[str] = []
+    for step in getattr(run, "trace", None) or []:
+        args = step.get("arguments")
+        if step.get("action") != "get_transaction_details" or not isinstance(args, dict):
+            continue
+        for ref in args.get("refs") or []:
+            real = id_map.get(str(ref).strip().upper())
+            if real and real not in ids:
+                ids.append(real)
+    return ids
+
+
+# Phase 4 – Step 4.4: transactions the SAR is about, in date order
+def involved_transactions(record: CaseRecord) -> list[TransactionData]:
+    """Transactions named in the approved risk finding or the narrative reasoning, plus those the
+    compliance agent looked up. Falls back to all case transactions if none can be identified."""
+    risk, out = record.risk_output, record.compliance_output
+    texts = [*risk.key_indicators, risk.reasoning, out.narrative_reasoning if out else ""]
+    wanted = set(record.looked_up_ids)
+    involved = [
+        t for t in record.case.transactions
+        if t.transaction_id in wanted or any(t.transaction_id in text for text in texts)
+    ]
+    return involved or list(record.case.transactions)
+
+
+# Phase 4 – Step 4.4: assemble the SAR from an approved case (validated by SARDocument)
+def build_sar(record: CaseRecord, generated_at: datetime | None = None) -> SARDocument:
+    generated_at = generated_at or datetime.now(UTC)
+    case, risk = record.case, record.risk_output
+    txns = involved_transactions(record)
+    if not txns:
+        raise ValueError("the case has no transactions to report")
+    risk_stats = record.risk_stats or StageStats()
+    compliance_stats = record.compliance_stats or StageStats()
+    return SARDocument(
+        sar_id=f"SAR_{case.customer.customer_id}_{generated_at:%Y%m%d%H%M%S}",
+        generated_at=generated_at,
+        case_id=case.case_id,
+        subject=case.customer,
+        accounts=case.accounts,
+        activity=SuspiciousActivity(
+            typology=risk.classification,
+            risk_level=risk.risk_level,
+            confidence_score=risk.confidence_score,
+            start_date=min(t.transaction_date for t in txns),
+            end_date=max(t.transaction_date for t in txns),
+            total_amount=round(sum(t.amount for t in txns), 2),
+            transaction_ids=[t.transaction_id for t in txns],
+        ),
+        narrative=record.compliance_output,
+        risk_review=record.risk_decision,
+        compliance_review=record.compliance_decision,
+        provenance=SARProvenance(
+            risk_model=risk_stats.model,
+            risk_prompt_version=risk_stats.prompt_version,
+            compliance_model=compliance_stats.model,
+            compliance_prompt_version=compliance_stats.prompt_version,
+        ),
+    )
