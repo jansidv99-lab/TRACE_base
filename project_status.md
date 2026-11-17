@@ -11,7 +11,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 📝 plan only
 | 02 – Risk Analyst agent | ✅ | `feature/risk-analyst-agent` · PR #4 merged |
 | 03 – Compliance Officer agent | ✅ | `feature/compliance-officer-agent` · PR #5 merged |
 | 04 – Workflow integration & human gates | ✅ | `feature/sar-workflow` · PR #6 merged |
-| 05 – Streamlit UI | ✅ (5.8 deferred) | `feature/streamlit-review-ui` · PR #7 merged |
+| 05 – Streamlit UI | ✅ | `feature/streamlit-review-ui` · PR #7 merged |
 | 06 – CI/CD to GCP | ✅ live on Cloud Run | `chore/github-actions-ci` (PR #8), `chore/cloudrun-deploy` (PR #9) merged |
 | 07 – Test suite consolidation | ⏳ | – |
 | 08 – AI QA framework | ⏳ | – |
@@ -104,7 +104,7 @@ Plan: [`plan/04-workflow-integration/plan.md`](plan/04-workflow-integration/plan
 - Notebook projection to 119 active cases uses an approval rate that includes the free
   zero-activity rejection → slightly optimistic; labelled as a rough assumption.
 
-## Stage 05 – Streamlit UI ✅ (5.8 deferred)
+## Stage 05 – Streamlit UI ✅
 Plan: [`plan/05-streamlit-ui/plan.md`](plan/05-streamlit-ui/plan.md) — approved with all recommendations (session-only state, segregation of duties enforced in the workflow, batch N ≤ 10, free-text reviewer ID, added setup/tests/walk-through steps)
 
 | Step | Status | Output |
@@ -116,11 +116,52 @@ Plan: [`plan/05-streamlit-ui/plan.md`](plan/05-streamlit-ui/plan.md) — approve
 | 5.5 SAR & audit views | ✅ | `app/views/sars_audit.py`, `read_audit_events` |
 | 5.6 Metrics panel | ✅ | `app/views/metrics.py` |
 | 5.7 UI tests | ✅ | `tests/test_streamlit_app.py`, `tests/test_ui_helpers.py` (50 tests, see map below) |
-| 5.8 Manual walk-through | ⏸ deferred | developer decision 2026-11-17: CI/CD (Stage 06) first; walk-through later on the deployed app |
+| 5.8 Manual walk-through | ✅ | done by the developer on the live Cloud Run app (2026-11-17), see findings below |
 
 **UI test coverage map (Step 5.7, 50 tests):** app shell 7 · case queue 6 · risk review 6 ·
 compliance review 7 · SARs & audit 4 · metrics 3 · end-to-end journey with real agents on
 `FakeLLMClient` 1 · pure helpers (`app/ui_helpers.py`) 16.
+
+**Walk-through findings (Step 5.8, live app, 2026-11-17):**
+- First attempt: analysing CUST_0003 routed the case to manual review with
+  `APIConnectionError: Connection error.` Cause: the GitHub variable `OPENAI_BASE_URL` held the
+  runbook placeholder text (`<OPENAI_BASE_URL from .env>`), so Cloud Run had no valid endpoint.
+  Found with a read-only `gcloud run services describe`; fixed by setting the real URL (quotes from
+  `.env` stripped) and re-running CD. The UI handled the failure as designed (manual review, clear
+  message, no crash).
+- After the fix the developer confirmed the app works end-to-end on Cloud Run (analysis → both
+  human gates → SAR).
+- **Filed SAR `SAR_CUST_0003_20261117131657` — a false positive, filed again.** CUST_0003 has no
+  planted pattern (all 34 transactions are ordinary `TXN_`), yet the Risk Analyst rated it
+  Money_Laundering / Medium (0.75) — the same call as in Stage 04 — and it was approved at both
+  gates (reviewers `321` → `123`; segregation of duties held).
+- **Narrative facts all verified against the data** (Claude, read-only check of the CSVs): 9 wire
+  transfers totalling $17,414.86 (Feb 4 – Jul 5, 2025); $2,389.53 on May 8 ("Utility bill") and
+  $2,931.22 on May 14 ("Investment transfer") with the right counterparties; 34 transactions,
+  $81,864.28 in total; age 65. → The ReACT grounding works: no invented amounts or dates.
+- **…but the "why" is weak:** the "notable" wires are a utility bill and an investment transfer,
+  and ~$17k of wires over 5 months is set against a $48,664 income while the account's average
+  monthly balance is $127,691. Faithful facts, unsupported conclusion → V2 risk prompt calibration
+  and a Stage 08 "is the why supported?" grader.
+- **SAR activity section ≠ narrative:** the SAR lists 14 transactions / $32,719.92 (risk-cited +
+  looked-up refs, incl. deposits, ACH, a debit purchase) while the narrative describes 9 wires /
+  $17,414.86 → two different totals for an examiner.
+- **Approval reasons carry no information** ("approved"): a reason is only required to reject, so
+  the audit trail does not record *why* a case was judged suspicious.
+- Lesson: the CD health check proves the web server starts, not that the LLM settings are valid →
+  fix list item 1.
+
+**Fix list (proposed, for review before Stage 07):**
+1. `cd.yml`: pre-deploy check that fails if a required variable is empty, still contains `<…>`
+   placeholder text, or `OPENAI_BASE_URL` does not start with `https://`.
+2. Runbook block 8: read values from `.env` (quotes stripped) instead of placeholders to fill in.
+3. `.gitignore`: add `*.stackdump` (Git Bash crash dumps appeared twice in the repo root).
+4. SAR activity section: make it consistent with the narrative — e.g. list the transactions the
+   narrative relies on, or label the section clearly as "transactions reviewed" with its own total.
+5. Approvals: require (or at least prompt for) a short reason at both gates, so the audit trail
+   records why a case was escalated, not only why one was dropped.
+6. Risk calibration (carry to `V2` prompt / Stage 08 evals): CUST_0003 is a repeat false positive
+   — ordinary payments ranked as Money_Laundering; compare activity to balances, not only income.
 
 **Decisions (Stage 05):**
 - Review screens (queue, risk review, compliance review) never show real transaction IDs: the
