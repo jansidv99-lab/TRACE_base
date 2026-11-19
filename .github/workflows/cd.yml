@@ -3,10 +3,16 @@
 #
 # CI (ci.yml) answers "is the code correct?"; CD (this file) answers "can we ship it?".
 #
-#   pull request to main ─► build + smoke-test the image only (catches a broken Dockerfile early)
-#   CI succeeded on main ─► image inputs changed? (Step 9.1) ─► build + smoke-test ─► validate
-#                           variables ─► push ─► deploy to Cloud Run   (docs-only merges stop early)
+#   pull request to main ─► image inputs changed in the PR? ─► build + smoke-test the image only
+#   CI succeeded on main ─► image inputs changed since the LIVE version? ─► build + smoke-test
+#                           ─► validate variables ─► push ─► deploy to Cloud Run
 #   manual "Run workflow" on main ─► always build + deploy (e.g. after a config/variable fix)
+#
+# Phase 9 – Step 9.1c (fix #9): one `changes` job decides for every trigger (no `paths:` filter,
+# so the image-input list exists once). After CI it compares the commit that is live on Cloud Run
+# (image tag = commit SHA) with the new one, so a failed deploy is retried by the next merge and
+# every merge style is covered. Pattern: Claude Code skill `cd-deploy-skip`, list from the
+# `cd-scope-auditor` subagent (.claude/).
 #
 # Note: GitHub only starts `workflow_run` workflows from the default branch, so the
 # "after CI on main" path becomes active once this file is merged.
@@ -19,16 +25,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    # Image inputs — keep this list in sync with IMAGE_INPUTS in the `changes` job below
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - requirements.txt
-      - app/**
-      - src/**
-      - project_data/**
-      - .streamlit/**
-      - .github/workflows/cd.yml
   workflow_dispatch: {}
 
 permissions:
@@ -40,54 +36,106 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Phase 9 – Step 9.1 (fix #7): deploy only when something that goes into the image changed.
-  # The workflow_run trigger cannot be path-filtered, so without this every merge to main —
-  # even docs-only — redeployed, ending open review sessions and wiping Cloud Run's temporary
-  # audit log and SAR files.
-  # Assumes PRs are merged with merge commits (gh pr merge --merge): then HEAD^1..HEAD is the
-  # whole PR. A rebase-merge of several commits could hide changes in the earlier ones.
+  # Phase 9 – Step 9.1 (fix #7) + Step 9.1c (fix #9): build/deploy only when something that goes
+  # into the image changed. The workflow_run trigger cannot be path-filtered, so this job is the
+  # only gate: without it every merge — even docs-only — redeployed, ending open review sessions
+  # and wiping Cloud Run's temporary audit log and SAR files.
   changes:
     name: Did the image inputs change?
+    # after CI: only when CI passed (nothing would deploy otherwise)
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write   # keyless login, used only on the after-CI path to read the live revision
     outputs:
       image: ${{ steps.diff.outputs.image }}
     steps:
-      - name: Check out the commit and its parent
+      - name: Check out the history (the exact commit CI tested, when triggered by CI)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - id: diff
-        name: Compare the image inputs with the previous commit
+      # Phase 9 – Step 9.1c: the three cloud steps may fail without failing the run —
+      # no live SHA means "deploy" (fail open). Same identity as the deploy job (run.admin).
+      - id: auth
+        name: Authenticate to Google Cloud (after-CI path only)
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
+        uses: google-github-actions/setup-gcloud@v2
+
+      - id: live
+        name: Read the commit SHA of the live Cloud Run revision
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
         env:
-          # keep in sync with the pull_request `paths:` filter above
-          IMAGE_INPUTS: >-
-            Dockerfile .dockerignore requirements.txt app src project_data .streamlit
-            .github/workflows/cd.yml
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
         run: |
-          if [ "${{ github.event_name }}" != "workflow_run" ]; then
-            # PRs are already path-filtered; a manual "Run workflow" always deploys (config fixes)
-            echo "image=true" >> "$GITHUB_OUTPUT"
-            echo "${{ github.event_name }} run: continue"
-            exit 0
+          REV="$(gcloud run services describe "$SERVICE" --region "$REGION" \
+                   --format='value(status.latestReadyRevisionName)')" || exit 0
+          [ -n "$REV" ] || { echo "no ready revision"; exit 0; }
+          IMAGE="$(gcloud run revisions describe "$REV" --region "$REGION" \
+                     --format='value(spec.containers[0].image)')" || exit 0
+          echo "live revision $REV runs $IMAGE"
+          echo "sha=${IMAGE##*:}" >> "$GITHUB_OUTPUT"
+
+      # Phase 9 – Step 9.1c: one decision for every trigger
+      - id: diff
+        name: Compare the image inputs with the live (or base) version
+        env:
+          # The image inputs: every Dockerfile COPY source + requirements.txt + this workflow.
+          # The only copy of this list; keep it in sync with the CD bullet in CLAUDE.md.
+          IMAGE_INPUTS_REGEX: '^Dockerfile$|^\.dockerignore$|^requirements\.txt$|^app/|^src/|^project_data/|^\.streamlit/|^\.github/workflows/cd\.yml$'
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          NEW_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          LIVE_SHA: ${{ steps.live.outputs.sha }}
+        run: |
+          # Fail open: whenever the comparison can't be trusted, deploy.
+          deploy() {
+            echo "image=true" >> "$GITHUB_OUTPUT"; echo "$1 - building"
+            echo "### Building: $1" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          }
+          skip() {
+            echo "image=false" >> "$GITHUB_OUTPUT"; echo "$1 - nothing to deploy"
+            echo "### Nothing to deploy: $1" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          }
+          case "$EVENT" in
+            pull_request) RANGE="${PR_BASE}...${PR_HEAD}"; LABEL="PR" ;;
+            workflow_run)
+              printf '%s' "$LIVE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+                || deploy "live version unknown ('${LIVE_SHA}')"
+              git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null \
+                || deploy "live commit ${LIVE_SHA} not in history"
+              [ "$LIVE_SHA" != "$NEW_SHA" ] || skip "commit ${NEW_SHA} is already live"
+              RANGE="${LIVE_SHA}..${NEW_SHA}"; LABEL="Live ${LIVE_SHA:0:7} -> new ${NEW_SHA:0:7}" ;;
+            *) deploy "event '$EVENT' always deploys" ;;
+          esac
+          CHANGED="$(git diff --name-only "$RANGE")" || deploy "cannot compute the diff"
+          [ -n "$CHANGED" ] || deploy "empty diff"
+          IMAGE_FILES="$(printf '%s\n' "$CHANGED" | grep -E "$IMAGE_INPUTS_REGEX" || true)"
+          if [ -n "$IMAGE_FILES" ]; then
+            echo "Image inputs changed:"; echo "$IMAGE_FILES"
+            deploy "${LABEL}: image inputs changed ($(printf '%s\n' "$IMAGE_FILES" | wc -l | tr -d ' ') files)"
           fi
-          # shellcheck disable=SC2086  # IMAGE_INPUTS is a deliberate word list
-          CHANGED="$(git diff --name-only HEAD^1 HEAD -- $IMAGE_INPUTS)"
-          if [ -n "$CHANGED" ]; then
-            echo "image=true" >> "$GITHUB_OUTPUT"
-            echo "Image inputs changed:"; echo "$CHANGED"
-          else
-            echo "image=false" >> "$GITHUB_OUTPUT"
-            echo "No image inputs changed - nothing to build or deploy."
-            echo "### Nothing to deploy - no image inputs changed in this merge" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          skip "${LABEL}: no image inputs changed"
 
   build:
     name: Build and smoke-test container
     needs: changes
-    # Only when the image inputs changed (fix #7), and after CI on main only if CI passed.
+    # Only when the image inputs changed (fix #7 / #9), and after CI on main only if CI passed.
     if: >-
       needs.changes.outputs.image == 'true' &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
