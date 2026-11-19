@@ -19,8 +19,9 @@ def _stats(prompt=1_000_000, completion=1_000_000, model="gpt-4o-mini-2024-07-18
 
 
 def _decision(gate, decision):
+    # Phase 9 – Step 9.2: every decision carries a reason of at least 10 characters
     return HumanDecision(gate=gate, decision=decision, reviewer_id="r1",
-                         reason="no" if decision == "reject" else None)
+                         reason=f"{decision}: reason recorded")
 
 
 def _record(case, status, risk=None, risk_decision=None, compliance=None,

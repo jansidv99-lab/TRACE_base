@@ -78,7 +78,7 @@ if waiting:
     with st.form("compliance_decision_form"):
         choice = st.radio("Decision", ["approve", "reject"], horizontal=True,
                           key="compliance_choice")
-        reason = st.text_area("Reason (required to reject)", key="compliance_reason")
+        reason = st.text_area("Reason (required, at least 10 characters)", key="compliance_reason")
         submitted = st.form_submit_button("Submit compliance decision", type="primary",
                                           key="compliance_submit")
     if submitted and record_decision("compliance", case_id, choice, reason):

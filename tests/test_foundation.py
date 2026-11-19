@@ -307,19 +307,30 @@ def test_compliance_output_rejects_bad_values(field, value):
 # ===========================================================================
 
 
-# Phase 4 – Step 4.1: an approval needs no reason; blank reasons are stored as None
+# Phase 4 – Step 4.1: a valid approval; whitespace is trimmed
+# Phase 9 – Step 9.2: approvals now carry a reason too
 def test_human_decision_approve():
-    d = HumanDecision(gate="risk", decision="approve", reviewer_id=" analyst_1 ", reason="  ")
+    d = HumanDecision(gate="risk", decision="approve", reviewer_id=" analyst_1 ",
+                      reason="  structuring pattern confirmed  ")
     assert d.reviewer_id == "analyst_1"
-    assert d.reason is None
+    assert d.reason == "structuring pattern confirmed"
     assert d.decided_at.tzinfo is not None
 
 
-# Phase 4 – Step 4.1: a rejection must say why
-@pytest.mark.parametrize("reason", [None, "", "   "])
-def test_human_decision_reject_needs_reason(reason):
-    with pytest.raises(ValidationError, match="must include a reason"):
-        HumanDecision(gate="risk", decision="reject", reviewer_id="a1", reason=reason)
+# Phase 9 – Step 9.2: BOTH decisions at BOTH gates need a reason of at least 10 characters
+@pytest.mark.parametrize("gate", ["risk", "compliance"])
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+@pytest.mark.parametrize("reason", [None, "", "   ", "too short"])  # "too short" = 9 chars
+def test_human_decision_needs_reason(gate, decision, reason):
+    with pytest.raises(ValidationError,
+                       match=f"a reason is required to {decision} at the {gate} gate"):
+        HumanDecision(gate=gate, decision=decision, reviewer_id="a1", reason=reason)
+
+
+# Phase 9 – Step 9.2: exactly 10 characters (after trimming) is enough
+def test_human_decision_reason_boundary():
+    assert HumanDecision(gate="risk", decision="approve", reviewer_id="a1",
+                         reason="  ten chars!  ").reason == "ten chars!"
 
 
 @pytest.mark.parametrize(
@@ -328,7 +339,8 @@ def test_human_decision_reject_needs_reason(reason):
      ("decided_at", datetime(2026, 11, 17, 12, 0))],  # naive datetime
 )
 def test_human_decision_rejects_bad_values(field, value):
-    data = {"gate": "risk", "decision": "approve", "reviewer_id": "a1", field: value}
+    data = {"gate": "risk", "decision": "approve", "reviewer_id": "a1",
+            "reason": "indicators reviewed and confirmed", field: value}
     with pytest.raises(ValidationError):
         HumanDecision(**data)
 
@@ -352,9 +364,10 @@ def sar_data(sample_case) -> dict:
             "transaction_ids": ["TXN_B24455F3"],
         },
         "narrative": VALID_COMPLIANCE,
-        "risk_review": {"gate": "risk", "decision": "approve", "reviewer_id": "analyst_1"},
+        "risk_review": {"gate": "risk", "decision": "approve", "reviewer_id": "analyst_1",
+                        "reason": "indicators reviewed and confirmed"},
         "compliance_review": {"gate": "compliance", "decision": "approve",
-                              "reviewer_id": "officer_1"},
+                              "reviewer_id": "officer_1", "reason": "narrative matches the case"},
         "provenance": {"risk_model": "gpt-4o-mini", "risk_prompt_version": "V1"},
     }
 
@@ -373,7 +386,8 @@ def test_sar_document_valid(sar_data):
     [
         ({"risk_review": {"gate": "risk", "decision": "reject", "reviewer_id": "a1",
                           "reason": "false positive"}}, "not an approval"),
-        ({"compliance_review": {"gate": "risk", "decision": "approve", "reviewer_id": "o1"}},
+        ({"compliance_review": {"gate": "risk", "decision": "approve", "reviewer_id": "o1",
+                                "reason": "indicators reviewed and confirmed"}},
          "must be a 'compliance' gate decision"),
         ({"activity_dates": ("2025-03-01", "2025-02-01")}, "before start_date"),
         ({"activity_ids": ["T001"]}, "transaction_ids"),
