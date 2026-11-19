@@ -1,0 +1,23 @@
+# TRACE CI cases (ci-scope-auditor re-audit, 2026-11-19)
+# regex: '^plan/|^notebooks/|^\.claude/|^[^/]+\.md$|^[^/]+\.png$'
+# expected|changed files (comma-separated); true = CI must run
+false|plan/06-cicd-gcp/plan.md,notebooks/01_data_exploration.ipynb
+false|CLAUDE.md,project_status.md,project_system_arch.png
+false|.claude/agents/ci-scope-auditor.md,.claude/skills/ci-docs-skip/scripts/docs_only.sh
+true|src/prompts/risk_analyst_V1.md
+true|src/prompts/compliance_officer_V2.md,plan/09-walkthrough-fixes/plan.md
+true|planner/x.md
+true|plans/x.md,notebooks_old/a.ipynb
+true|docs/README.md
+true|.claude.json
+true|.github/workflows/ci.yml
+true|.github/workflows/cd.yml,plan/00-master/plan.md
+true|Dockerfile
+true|requirements.txt
+true|project_data/customers.csv
+true|.streamlit/config.toml
+true|pyproject.toml
+true|tests/test_workflow.py,CLAUDE.md
+true|app/views/queue.py
+true|app/static/logo.png
+true|cmd

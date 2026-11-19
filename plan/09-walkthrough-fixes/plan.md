@@ -26,9 +26,10 @@ Fix what the live walk-through exposed. Grouped by how much they touch:
 | 6 | CUST_0003 (clean) rated Money_Laundering / Medium twice → false-positive SAR | `V2` risk prompt, calibrated, checked by a small before/after evaluation | medium + live check |
 | 7 | Every merge to `main` redeployed, even docs-only (the `workflow_run` trigger has no path filter) → ended review sessions and wiped temporary audit/SAR files | CD builds and deploys only when the image inputs changed (developer decision 2026-11-17: this item only, no GitHub "environment") | small |
 | 8 | CI ran lint + tests on docs-only changes (`plan/`, `project_status.md`, …) → wasted minutes, slower docs PRs (added by Claude per developer request, 2026-11-19) | CI skips lint/test when every changed file is docs-only (`changes` job, reusable `ci-docs-skip` skill) | small |
+| 9 | CD's decision had gaps: a failed deploy followed by a docs-only merge was never deployed (`HEAD^1..HEAD`), a rebase-merge could hide changes, and the image-input list existed twice (`paths:` + `IMAGE_INPUTS`) (added by Claude per developer request, 2026-11-19) | one `changes` job for every CD trigger that diffs against the **live Cloud Run version**; separate `cd-deploy-skip` skill + `cd-scope-auditor` subagent | small |
 
 **Done when:**
-- All eight are fixed, with tests, and CI is green.
+- All nine are fixed, with tests, and CI is green.
 - The `V2` evaluation shows clean customers no longer escalated, while the planted patterns still are.
 - The new version is deployed through CD and spot-checked on the live app.
 
@@ -81,6 +82,9 @@ Fix what the live walk-through exposed. Grouped by how much they touch:
     (`~/.claude/skills/ci-docs-skip/`: playbook, YAML template, filter script + tests) and a
     read-only **subagent** (`~/.claude/agents/ci-scope-auditor.md`) that proposes a repo's
     docs-only list with evidence. Both work in any project; only the list is repo-specific.
+    Identical copies are committed in the repo's `.claude/` (`deb5488`). For **skills the
+    `~/.claude` copy wins**, for **subagents the repo copy wins**, so edit both together.
+    A `/ci-docs-skip` re-run (2026-11-19) had the subagent re-audit TRACE: pattern confirmed.
 - **Output:**
   - `ci.yml`: a new first job **`changes`** ("Code or docs-only change?") from the skill template.
     It lists changed files (PR: `base.sha...head.sha`; push: `before..sha`) and drops docs-only paths:
@@ -96,6 +100,38 @@ Fix what the live walk-through exposed. Grouped by how much they touch:
   `src/prompts/*.md` → run, `planner/` → run); then on GitHub this branch's PR runs "Lint and
   test", and a docs-only PR shows it **Skipped** and is mergeable.
 - **Depends on:** 9.1 (same CI/CD area; the CD `changes` job is the pattern being reused)
+
+### Step 9.1c – CD deploys only when image inputs changed vs the live version (#9)
+- **Purpose:** give CD the same "skip when irrelevant" behaviour as CI, without the gaps of the
+  fix #7 version, and package the know-how separately from CI.
+- **Concepts:**
+  - **Allow list vs ignore list:** CI asks "is anything *not* docs?" (ignore list). CD asks
+    "did anything that goes *into the image* change?" (allow list from the Dockerfile `COPY`
+    lines). A `tests/` change runs CI but must not redeploy.
+  - **Diff against what is running:** the Cloud Run image tag is the commit SHA, so CD compares
+    the *live* commit with the *new* one. A failed deploy is retried by the next merge, even a
+    docs-only one, and any merge style (merge, squash, rebase) is covered.
+  - **Fail open = deploy:** tag unreadable or not a SHA, unknown commit, diff error, empty diff →
+    deploy. Live == new → nothing to deploy (re-runs are free).
+  - **One list, one gate:** no workflow-level `paths:` copy; the `changes` job decides for PRs,
+    after-CI runs and manual runs (manual = always deploy).
+  - **Separate Claude Code pieces:** skill `cd-deploy-skip` (playbook, template, filter script +
+    tests) and read-only subagent `cd-scope-auditor` (derives the image-input list with
+    evidence). They mirror the CI pair but don't share files, so neither one confuses the other.
+- **Output:**
+  - `.claude/skills/cd-deploy-skip/`, `.claude/agents/cd-scope-auditor.md` (+ identical
+    `~/.claude` copies); one cross-reference line in `ci-docs-skip/SKILL.md`.
+  - `cd.yml`: `pull_request.paths:` removed; the `changes` job replaced by the skill template.
+    It uses WIF auth (existing `DEPLOYER_SA`, which has `run.admin`, so no GCP changes) only on the
+    after-CI path, reads the live revision's image tag, diffs `live..new` over
+    `IMAGE_INPUTS_REGEX`, and writes "Live … → new …" to the job summary. Output name `image`
+    unchanged, so `build`/`deploy` stay as they are.
+  - `CLAUDE.md` CD bullet updated.
+- **Verification:** the skill's `test_inputs_changed.sh` with TRACE's cases; the `run:` block
+  simulated on real commits with a stubbed `gcloud` (deploy / skip / live == new / unreadable tag /
+  PR docs-only / PR `tests/`-only / manual); then on GitHub, after the merge CD logs "Live … →
+  new …" and deploys, and a later docs-only merge logs "nothing to deploy".
+- **Depends on:** 9.1 (CD `changes` job), 9.1b (CI pattern, skill/subagent structure)
 
 ### Step 9.2 – Reason required at both gates (#5)
 - **Purpose:** the audit trail must explain *why* a case went on, not only why one was dropped.
@@ -164,7 +200,8 @@ Fix what the live walk-through exposed. Grouped by how much they touch:
 
 ```
 .github/workflows/cd.yml  plan/06-cicd-gcp/gcp_setup.md  .gitignore                (9.1)
-.github/workflows/ci.yml  CLAUDE.md                                                (9.1b)
+.github/workflows/ci.yml  CLAUDE.md  .claude/skills/ci-docs-skip  .claude/agents/ci-scope-auditor.md (9.1b)
+.github/workflows/cd.yml  CLAUDE.md  .claude/skills/cd-deploy-skip  .claude/agents/cd-scope-auditor.md (9.1c)
 src/foundation_sar.py  src/sar_workflow.py  app/views/*_review.py  app/state.py    (9.2)
 src/compliance_tools.py  src/compliance_officer_agent.py  src/prompts/compliance_officer_V2.md (9.3)
 src/prompts/risk_analyst_V2.md  src/config.py  .env.example  scripts/compare_prompt_versions.py (9.4)

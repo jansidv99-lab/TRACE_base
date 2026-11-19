@@ -1,0 +1,20 @@
+# Generic Python + Docker repo, regex '^Dockerfile$|^\.dockerignore$|^requirements\.txt$|^app/|^src/'
+# expected|changed files (comma-separated); true = build/deploy
+true|Dockerfile
+true|.dockerignore
+true|requirements.txt
+true|src/service.py
+true|src/prompts/system_V2.md
+true|app/static/logo.png
+true|README.md,src/x.py
+# dev-only and docs: never redeploy
+false|tests/test_x.py
+false|requirements-dev.txt
+false|README.md,docs/guide.md
+false|pyproject.toml
+false|.github/workflows/ci.yml
+# look-alikes and the literal dot
+false|source/x.py
+false|Dockerfile.dev
+false|requirementsXtxt
+false|apps/x.py

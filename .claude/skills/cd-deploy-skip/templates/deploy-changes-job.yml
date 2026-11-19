@@ -1,0 +1,98 @@
+# cd-deploy-skip template: paste under `jobs:` in the CD workflow, then wire the build job:
+#
+#   build:
+#     needs: changes
+#     if: needs.changes.outputs.image == 'true'   # && any existing conditions
+#
+# Remove `paths:`/`paths-ignore:` from the workflow triggers: this job is the single gate.
+# Replace IMAGE_INPUTS_REGEX with the repo's list (cd-scope-auditor) and the vars.* names with the
+# repo's variables. Recipe: Cloud Run + Workload Identity Federation; images tagged with the SHA.
+
+  changes:
+    name: Did the image inputs change?
+    # after CI: only when CI passed (nothing would deploy otherwise)
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write   # keyless login, used only on the after-CI path to read the live revision
+    outputs:
+      image: ${{ steps.diff.outputs.image }}
+    steps:
+      - name: Check out the history (the exact commit CI tested, when triggered by CI)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      # The three cloud steps may fail without failing the run: no live SHA → deploy (fail open)
+      - id: auth
+        name: Authenticate to Google Cloud (after-CI path only)
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
+        uses: google-github-actions/setup-gcloud@v2
+
+      - id: live
+        name: Read the commit SHA of the live Cloud Run revision
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+        run: |
+          REV="$(gcloud run services describe "$SERVICE" --region "$REGION" \
+                   --format='value(status.latestReadyRevisionName)')" || exit 0
+          [ -n "$REV" ] || { echo "no ready revision"; exit 0; }
+          IMAGE="$(gcloud run revisions describe "$REV" --region "$REGION" \
+                     --format='value(spec.containers[0].image)')" || exit 0
+          echo "live revision $REV runs $IMAGE"
+          echo "sha=${IMAGE##*:}" >> "$GITHUB_OUTPUT"
+
+      - id: diff
+        name: Compare the image inputs with the live (or base) version
+        env:
+          # extended regex; a changed file matching it goes into the image
+          IMAGE_INPUTS_REGEX: '^Dockerfile$|^\.dockerignore$|^requirements\.txt$|^app/|^src/'
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          NEW_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          LIVE_SHA: ${{ steps.live.outputs.sha }}
+        run: |
+          # Fail open: whenever the comparison can't be trusted, deploy.
+          deploy() {
+            echo "image=true" >> "$GITHUB_OUTPUT"; echo "$1 - building"
+            echo "### Building: $1" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          }
+          skip() {
+            echo "image=false" >> "$GITHUB_OUTPUT"; echo "$1 - nothing to deploy"
+            echo "### Nothing to deploy: $1" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          }
+          case "$EVENT" in
+            pull_request) RANGE="${PR_BASE}...${PR_HEAD}"; LABEL="PR" ;;
+            workflow_run)
+              printf '%s' "$LIVE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+                || deploy "live version unknown ('${LIVE_SHA}')"
+              git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null \
+                || deploy "live commit ${LIVE_SHA} not in history"
+              [ "$LIVE_SHA" != "$NEW_SHA" ] || skip "commit ${NEW_SHA} is already live"
+              RANGE="${LIVE_SHA}..${NEW_SHA}"; LABEL="Live ${LIVE_SHA:0:7} -> new ${NEW_SHA:0:7}" ;;
+            *) deploy "event '$EVENT' always deploys" ;;
+          esac
+          CHANGED="$(git diff --name-only "$RANGE")" || deploy "cannot compute the diff"
+          [ -n "$CHANGED" ] || deploy "empty diff"
+          IMAGE_FILES="$(printf '%s\n' "$CHANGED" | grep -E "$IMAGE_INPUTS_REGEX" || true)"
+          if [ -n "$IMAGE_FILES" ]; then
+            echo "Image inputs changed:"; echo "$IMAGE_FILES"
+            deploy "${LABEL}: image inputs changed ($(printf '%s\n' "$IMAGE_FILES" | wc -l | tr -d ' ') files)"
+          fi
+          skip "${LABEL}: no image inputs changed"

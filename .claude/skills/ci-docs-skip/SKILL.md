@@ -9,6 +9,9 @@ Goal: CI still starts on every PR/push, but the expensive job (lint, tests, buil
 when every changed file is docs-only. Deterministic, free, no secrets — never use an LLM in CI
 to decide relevance.
 
+Scope: **CI only** (lint/test). For deploy workflows (build/push/deploy only when image inputs
+changed) use the separate **`cd-deploy-skip`** skill — different question, different list.
+
 ## 1. Decide the repo's docs-only list (repo-specific — never guess)
 
 Delegate the analysis to the **`ci-scope-auditor`** subagent ("propose the docs-only list for this
