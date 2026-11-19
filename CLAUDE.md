@@ -121,7 +121,12 @@ the agent raises `ComplianceError`, and Stage 04 sends that case to manual revie
 ### CI/CD (Stage 06)
 
 - **CI** (`.github/workflows/ci.yml`): `ruff check .` + `pytest` on every PR and push to `main`, on
-  Linux, with no secrets (`llm` tests skip themselves).
+  Linux, with no secrets (`llm` tests skip themselves). A first `changes` job skips lint/test when
+  every changed file is docs-only — `^plan/|^notebooks/|^\.claude/|^[^/]+\.md$|^[^/]+\.png$` (root-level `*.md`
+  only; `src/prompts/*.md` are code). The job name stays "Lint and test (Python 3.11)" so a
+  required check still matches. Pattern: the `ci-docs-skip` skill (`.claude/skills/`) and the
+  read-only `ci-scope-auditor` subagent (`.claude/agents/`), which proposes the docs-only list;
+  copies also live in `~/.claude/` for other projects (the repo copy takes priority here).
 - **CD** (`.github/workflows/cd.yml`): on PRs that touch the image inputs it only builds and
   smoke-tests the container (`/_stcore/health`, no `.env` inside). After CI succeeds on `main` it
   also pushes the image to Artifact Registry (tag = commit SHA) and runs `gcloud run deploy`

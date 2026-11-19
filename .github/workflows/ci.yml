@@ -3,6 +3,12 @@
 # Runs on a clean Linux machine with NO secrets: tests that call the real LLM are marked `llm`
 # and skipped by default (pyproject.toml), and src/config.py falls back to safe defaults when
 # there is no .env. The CD workflow (Step 6.4) deploys only after this workflow succeeds on main.
+#
+# Phase 9 – Step 9.1b (fix #8): the workflow still starts on every PR/push, but lint + test are
+# SKIPPED when every changed file is docs-only (plan/, notebooks/, .claude/, root-level *.md and *.png).
+# A job skipped by `if:` reports as passed, so a required "Lint and test" check never blocks a
+# docs-only PR (workflow-level `paths-ignore` would leave it "waiting for status").
+# Pattern: the user-level Claude Code skill `ci-docs-skip`; docs-only list also in CLAUDE.md.
 name: CI
 
 on:
@@ -21,8 +27,60 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Phase 9 – Step 9.1b (fix #8): decide whether this change needs lint/test at all
+  changes:
+    name: Code or docs-only change?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: Check out the history (needed to diff against the base)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        name: List changed files and drop docs-only paths
+        env:
+          # A changed file matching this is docs-only. Root-level *.md only: src/prompts/*.md are
+          # code (loaded at runtime). Keep in sync with the CI bullet in CLAUDE.md.
+          DOCS_ONLY_REGEX: '^plan/|^notebooks/|^\.claude/|^[^/]+\.md$|^[^/]+\.png$'
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          # Fail open: whenever the diff can't be trusted, run CI.
+          run_ci() { echo "code=true" >> "$GITHUB_OUTPUT"; echo "$1 - running CI"; exit 0; }
+          case "$EVENT" in
+            pull_request) RANGE="${PR_BASE}...${PR_HEAD}" ;;
+            push)
+              if [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+                run_ci "new branch (no previous commit)"
+              fi
+              RANGE="${PUSH_BEFORE}..${PUSH_AFTER}" ;;
+            *) run_ci "event '$EVENT' is not filtered" ;;
+          esac
+          CHANGED="$(git diff --name-only "$RANGE")" || run_ci "cannot compute the diff"
+          [ -n "$CHANGED" ] || run_ci "empty diff"
+          echo "Changed files:"; echo "$CHANGED"
+          CODE_FILES="$(printf '%s\n' "$CHANGED" | grep -vE "$DOCS_ONLY_REGEX" || true)"
+          if [ -n "$CODE_FILES" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "Files that need CI:"; echo "$CODE_FILES"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only change - lint/test skipped."
+            echo "### Docs-only change - lint/test skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   test:
+    # Name unchanged on purpose: a required status check matches on it (Step 9.1b)
     name: Lint and test (Python 3.11)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

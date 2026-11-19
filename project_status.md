@@ -166,6 +166,8 @@ compliance review 7 · SARs & audit 4 · metrics 3 · end-to-end journey with re
 7. CD: deploy only when the image inputs changed — the docs-only walk-through merge redeployed
    the app (the `workflow_run` trigger has no path filter), ending sessions and wiping temporary
    files. (Added after the fix list, developer decision 2026-11-17.)
+8. CI: skip lint/test when a change touches only docs (`plan/`, `notebooks/`, `.claude/`, root `*.md`,
+   root `*.png`). (Added by Claude per developer request, 2026-11-19.)
 
 **Decisions (Stage 05):**
 - Review screens (queue, risk review, compliance review) never show real transaction IDs: the
@@ -220,7 +222,8 @@ Plan: [`plan/09-walkthrough-fixes/plan.md`](plan/09-walkthrough-fixes/plan.md) �
 | Step | Fixes | Status |
 |---|---|---|
 | 9.1 Small fixes: CD variable check, runbook block 8 from `.env`, `*.stackdump`, deploy only on image changes | #1 #2 #3 #7 | 🔄 |
-| 9.2 Reason required at both gates | #5 | ⏳ |
+| 9.1b CI skips docs-only changes (`changes` job; reusable `ci-docs-skip` skill + `ci-scope-auditor` subagent) | #8 | 📝 |
+| 9.2 Reason required at both gates | #5 | 🔄 |
 | 9.3 Compliance prompt V2 + declared supporting transactions | #4 | ⏳ |
 | 9.4 Risk prompt V2 (calibration) + V1-vs-V2 comparison | #6 | ⏳ |
 | 9.5 Ship and verify (`PROMPT_VERSION=V2`, live spot-check) | – | ⏳ |

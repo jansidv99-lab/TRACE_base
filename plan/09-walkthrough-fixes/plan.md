@@ -25,9 +25,10 @@ Fix what the live walk-through exposed. Grouped by how much they touch:
 | 5 | Approvals were audited with no reason ("approved") | a reason is required at **both** gates, for approve and reject | medium |
 | 6 | CUST_0003 (clean) rated Money_Laundering / Medium twice → false-positive SAR | `V2` risk prompt, calibrated, checked by a small before/after evaluation | medium + live check |
 | 7 | Every merge to `main` redeployed, even docs-only (the `workflow_run` trigger has no path filter) → ended review sessions and wiped temporary audit/SAR files | CD builds and deploys only when the image inputs changed (developer decision 2026-11-17: this item only, no GitHub "environment") | small |
+| 8 | CI ran lint + tests on docs-only changes (`plan/`, `project_status.md`, …) → wasted minutes, slower docs PRs (added by Claude per developer request, 2026-11-19) | CI skips lint/test when every changed file is docs-only (`changes` job, reusable `ci-docs-skip` skill) | small |
 
 **Done when:**
-- All seven are fixed, with tests, and CI is green.
+- All eight are fixed, with tests, and CI is green.
 - The `V2` evaluation shows clean customers no longer escalated, while the planted patterns still are.
 - The new version is deployed through CD and spot-checked on the live app.
 
@@ -66,6 +67,35 @@ Fix what the live walk-through exposed. Grouped by how much they touch:
     path list must match the PR filter, and that the check assumes merge-commit merges
     (`HEAD^1..HEAD` covers the whole PR).
 - **Depends on:** –
+
+### Step 9.1b – CI skips docs-only changes (#8)
+- **Purpose:** don't spend CI minutes (and reviewers' waiting time) on changes that cannot affect
+  lint or tests: the project-management docs.
+- **Concepts:**
+  - **Required checks vs path filters:** a workflow skipped by `paths-ignore` never reports, so if
+    "Lint and test" is a required check, a docs-only PR waits forever. A *job* skipped by `if:`
+    reports as passed. So the workflow always starts (seconds), but only the expensive job is skipped.
+  - **Fail open:** whenever the diff can't be trusted (new branch, failed diff, empty diff,
+    other events), CI runs.
+  - **Reusable knowledge in Claude Code:** the pattern lives in a user-level **skill**
+    (`~/.claude/skills/ci-docs-skip/`: playbook, YAML template, filter script + tests) and a
+    read-only **subagent** (`~/.claude/agents/ci-scope-auditor.md`) that proposes a repo's
+    docs-only list with evidence. Both work in any project; only the list is repo-specific.
+- **Output:**
+  - `ci.yml`: a new first job **`changes`** ("Code or docs-only change?") from the skill template.
+    It lists changed files (PR: `base.sha...head.sha`; push: `before..sha`) and drops docs-only paths:
+    `^plan/` · `^notebooks/` (ruff excludes them, no test reads them) · `^\.claude/` (Claude Code skills/agents: no `.py`, nothing reads them) · root-level `*.md` only
+    (`^[^/]+\.md$` → `src/prompts/*.md` still triggers CI: prompts are code) · root-level `*.png` only (`^[^/]+\.png$`; a PNG under `app/` would be a runtime asset).
+    The job summary says "Docs-only change – lint/test skipped".
+  - `test` job: `needs: changes`, `if: needs.changes.outputs.code == 'true'`; job **name
+    unchanged**, so any required-check setting keeps matching.
+  - `cd.yml`: no change. On a docs-only merge CI still ends `success`, CD starts, and its own
+    `changes` job (#7) stops at "nothing to deploy".
+  - `CLAUDE.md` CI bullet: the docs-only list + "pattern: `ci-docs-skip` skill".
+- **Verification:** the skill's `test_docs_only.sh` with TRACE's regex (11 cases incl.
+  `src/prompts/*.md` → run, `planner/` → run); then on GitHub this branch's PR runs "Lint and
+  test", and a docs-only PR shows it **Skipped** and is mergeable.
+- **Depends on:** 9.1 (same CI/CD area; the CD `changes` job is the pattern being reused)
 
 ### Step 9.2 – Reason required at both gates (#5)
 - **Purpose:** the audit trail must explain *why* a case went on, not only why one was dropped.
@@ -134,6 +164,7 @@ Fix what the live walk-through exposed. Grouped by how much they touch:
 
 ```
 .github/workflows/cd.yml  plan/06-cicd-gcp/gcp_setup.md  .gitignore                (9.1)
+.github/workflows/ci.yml  CLAUDE.md                                                (9.1b)
 src/foundation_sar.py  src/sar_workflow.py  app/views/*_review.py  app/state.py    (9.2)
 src/compliance_tools.py  src/compliance_officer_agent.py  src/prompts/compliance_officer_V2.md (9.3)
 src/prompts/risk_analyst_V2.md  src/config.py  .env.example  scripts/compare_prompt_versions.py (9.4)

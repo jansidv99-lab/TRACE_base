@@ -1,0 +1,55 @@
+# ci-docs-skip template: paste under `jobs:` in the CI workflow, then wire the existing job:
+#
+#   <existing-job>:
+#     name: <UNCHANGED name — required checks match on it>
+#     needs: changes
+#     if: needs.changes.outputs.code == 'true'
+#
+# Replace DOCS_ONLY_REGEX with the repo's list (see SKILL.md step 1). The filter logic must stay
+# identical to scripts/docs_only.sh.
+
+  changes:
+    name: Code or docs-only change?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: Check out the history (needed to diff against the base)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        name: List changed files and drop docs-only paths
+        env:
+          # extended regex; a changed file matching it is docs-only
+          DOCS_ONLY_REGEX: '^plan/|^notebooks/|^[^/]+\.md$|^[^/]+\.png$'
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          run_ci() { echo "code=true" >> "$GITHUB_OUTPUT"; echo "$1 - running CI"; exit 0; }
+          case "$EVENT" in
+            pull_request) RANGE="${PR_BASE}...${PR_HEAD}" ;;
+            push)
+              if [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+                run_ci "new branch (no previous commit)"
+              fi
+              RANGE="${PUSH_BEFORE}..${PUSH_AFTER}" ;;
+            *) run_ci "event '$EVENT' is not filtered" ;;
+          esac
+          CHANGED="$(git diff --name-only "$RANGE")" || run_ci "cannot compute the diff"
+          [ -n "$CHANGED" ] || run_ci "empty diff"
+          echo "Changed files:"; echo "$CHANGED"
+          CODE_FILES="$(printf '%s\n' "$CHANGED" | grep -vE "$DOCS_ONLY_REGEX" || true)"
+          if [ -n "$CODE_FILES" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "Files that need CI:"; echo "$CODE_FILES"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only change - lint/test skipped."
+            echo "### Docs-only change - lint/test skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
