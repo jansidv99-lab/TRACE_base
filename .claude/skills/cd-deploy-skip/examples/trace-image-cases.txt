@@ -1,0 +1,28 @@
+# TRACE CD cases
+# regex: '^Dockerfile$|^\.dockerignore$|^requirements\.txt$|^app/|^src/|^project_data/|^\.streamlit/|^\.github/workflows/cd\.yml$'
+# expected|changed files (comma-separated); true = build/deploy
+true|Dockerfile
+true|.dockerignore
+true|requirements.txt
+true|app/streamlit_app.py
+true|src/sar_workflow.py
+true|src/prompts/risk_analyst_V2.md
+true|project_data/transactions.csv
+true|.streamlit/config.toml
+true|.github/workflows/cd.yml
+true|plan/x.md,src/config.py
+# runs CI but must not redeploy
+false|tests/test_workflow.py
+false|requirements-dev.txt
+false|pyproject.toml
+false|.github/workflows/ci.yml
+false|.env.example,.gitignore
+# docs-only (CI skips too)
+false|plan/09-walkthrough-fixes/plan.md,project_status.md,CLAUDE.md
+false|notebooks/03_workflow_integration.ipynb,project_system_arch.png
+false|.claude/skills/cd-deploy-skip/SKILL.md,.claude/agents/cd-scope-auditor.md
+# look-alikes and the literal dot
+false|apps/x.py
+false|src_old/x.py
+false|Dockerfile.dev
+false|.github/workflows/cdXyml

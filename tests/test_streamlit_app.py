@@ -190,7 +190,8 @@ def _risk_page(tmp_path, cases, reviewer="analyst_1"):
     return at, wf
 
 
-def _submit_risk(at, choice, reason=""):
+# Phase 9 – Step 9.2: a reason is required for both choices; tests pass "" to see the refusal
+def _submit_risk(at, choice, reason="reviewed: the evidence supports this"):
     at.radio(key="risk_choice").set_value(choice)
     at.text_area(key="risk_reason").input(reason)
     at.button(key="risk_submit").click().run()
@@ -234,17 +235,20 @@ def test_risk_reject_with_reason(tmp_path, cases):
 
 
 # Phase 5 – Step 5.3: refusals are messages, and nothing changes
+# Phase 9 – Step 9.2: an approval without a (long enough) reason is refused too
 @pytest.mark.parametrize(
-    ("reviewer", "choice", "message"),
+    ("reviewer", "choice", "reason", "message"),
     [
-        (None, "approve", "Enter your reviewer ID"),
-        ("analyst_1", "reject", "a rejection must include a reason"),
+        (None, "approve", "reviewed: the evidence supports this", "Enter your reviewer ID"),
+        ("analyst_1", "reject", "", "a reason is required to reject at the risk gate"),
+        ("analyst_1", "approve", "", "a reason is required to approve at the risk gate"),
+        ("analyst_1", "approve", "looks ok", "at least 10 characters"),
     ],
-    ids=["no-reviewer", "reject-without-reason"],
+    ids=["no-reviewer", "reject-without-reason", "approve-without-reason", "reason-too-short"],
 )
-def test_risk_decision_refused(tmp_path, cases, reviewer, choice, message):
+def test_risk_decision_refused(tmp_path, cases, reviewer, choice, reason, message):
     at, wf = _risk_page(tmp_path, cases, reviewer=reviewer)
-    _submit_risk(at, choice)
+    _submit_risk(at, choice, reason)
     assert not at.exception
     assert any(message in e.value for e in at.error)
     assert wf.get(cases[0].case_id).status == "RISK_REVIEW"
@@ -280,7 +284,8 @@ def _compliance_page(tmp_path, cases, narrate=True, reviewer="officer_1", compli
     cid = cases[0].case_id
     wf.run_risk_analysis(cid)
     wf.record_risk_decision(cid, HumanDecision(gate="risk", decision="approve",
-                                               reviewer_id="analyst_1"))
+                                               reviewer_id="analyst_1",
+                                               reason="indicators reviewed and confirmed"))
     if narrate:
         wf.run_compliance(cid)
     at.session_state["reviewer_id"] = reviewer
@@ -289,7 +294,7 @@ def _compliance_page(tmp_path, cases, narrate=True, reviewer="officer_1", compli
     return at, wf
 
 
-def _submit_compliance(at, choice, reason=""):
+def _submit_compliance(at, choice, reason="reviewed: the evidence supports this"):
     at.radio(key="compliance_choice").set_value(choice)
     at.text_area(key="compliance_reason").input(reason)
     at.button(key="compliance_submit").click().run()
@@ -375,11 +380,13 @@ def _sars_page(tmp_path, cases, file_sar=True):
     cid = cases[0].case_id
     wf.run_risk_analysis(cid)
     wf.record_risk_decision(cid, HumanDecision(gate="risk", decision="approve",
-                                               reviewer_id="analyst_1"))
+                                               reviewer_id="analyst_1",
+                                               reason="indicators reviewed and confirmed"))
     wf.run_compliance(cid)
     if file_sar:
         wf.record_compliance_decision(cid, HumanDecision(gate="compliance", decision="approve",
-                                                         reviewer_id="officer_1"))
+                                                         reviewer_id="officer_1",
+                                                         reason="narrative matches the case"))
     at.run()
     at.switch_page("views/sars_audit.py").run()
     return at, wf
@@ -454,12 +461,15 @@ def _metrics_session(tmp_path, cases, priced=True):
     for cid in (filed, rejected):
         wf.run_risk_analysis(cid)
     wf.record_risk_decision(filed, HumanDecision(gate="risk", decision="approve",
-                                                 reviewer_id="analyst_1"))
+                                                 reviewer_id="analyst_1",
+                                                 reason="indicators reviewed and confirmed"))
     wf.record_risk_decision(rejected, HumanDecision(gate="risk", decision="reject",
-                                                    reviewer_id="analyst_1", reason="payroll"))
+                                                    reviewer_id="analyst_1",
+                                                    reason="payroll transfers only"))
     wf.run_compliance(filed)
     wf.record_compliance_decision(filed, HumanDecision(gate="compliance", decision="approve",
-                                                       reviewer_id="officer_1"))
+                                                       reviewer_id="officer_1",
+                                                       reason="narrative matches the case"))
     if priced:  # stub agents report "fake-model"; give them a priced model name
         for rec in wf.records.values():
             for stats in (rec.risk_stats, rec.compliance_stats):

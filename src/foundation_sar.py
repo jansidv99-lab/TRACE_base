@@ -301,6 +301,10 @@ def _require_timezone(value: datetime, field_name: str) -> datetime:
     return value
 
 
+# Phase 9 – Step 9.2: shortest acceptable gate reason, for approvals and rejections alike
+MIN_REASON_LENGTH = 10
+
+
 # Phase 4 – Step 4.1: one reviewer's decision at one gate (approvals AND rejections are audited)
 class HumanDecision(BaseModel):
     """What a human reviewer decided at the risk gate or the compliance gate.
@@ -324,12 +328,17 @@ class HumanDecision(BaseModel):
         return _require_timezone(value, "decided_at")
 
     # Phase 4 – Step 4.1: a rejection must say why (examiners will ask); blank reasons become None
+    # Phase 9 – Step 9.2 (fix #5): approvals too — the audit trail must record why a case was
+    # escalated, not only why one was dropped ("approved" alone told an examiner nothing)
     @model_validator(mode="after")
-    def _reject_needs_reason(self) -> "HumanDecision":
+    def _reason_required(self) -> "HumanDecision":
         if self.reason is not None and not self.reason:
             self.reason = None
-        if self.decision == "reject" and self.reason is None:
-            raise ValueError("a rejection must include a reason")
+        if self.reason is None or len(self.reason) < MIN_REASON_LENGTH:
+            raise ValueError(
+                f"a reason is required to {self.decision} at the {self.gate} gate "
+                f"(at least {MIN_REASON_LENGTH} characters)"
+            )
         return self
 
 

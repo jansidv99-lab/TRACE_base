@@ -3,8 +3,16 @@
 #
 # CI (ci.yml) answers "is the code correct?"; CD (this file) answers "can we ship it?".
 #
-#   pull request to main ─► build + smoke-test the image only (catches a broken Dockerfile early)
-#   CI succeeded on main ─► build + smoke-test ─► (Step 6.4) push ─► deploy to Cloud Run
+#   pull request to main ─► image inputs changed in the PR? ─► build + smoke-test the image only
+#   CI succeeded on main ─► image inputs changed since the LIVE version? ─► build + smoke-test
+#                           ─► validate variables ─► push ─► deploy to Cloud Run
+#   manual "Run workflow" on main ─► always build + deploy (e.g. after a config/variable fix)
+#
+# Phase 9 – Step 9.1c (fix #9): one `changes` job decides for every trigger (no `paths:` filter,
+# so the image-input list exists once). After CI it compares the commit that is live on Cloud Run
+# (image tag = commit SHA) with the new one, so a failed deploy is retried by the next merge and
+# every merge style is covered. Pattern: Claude Code skill `cd-deploy-skip`, list from the
+# `cd-scope-auditor` subagent (.claude/).
 #
 # Note: GitHub only starts `workflow_run` workflows from the default branch, so the
 # "after CI on main" path becomes active once this file is merged.
@@ -17,15 +25,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - requirements.txt
-      - app/**
-      - src/**
-      - project_data/**
-      - .streamlit/**
-      - .github/workflows/cd.yml
   workflow_dispatch: {}
 
 permissions:
@@ -37,10 +36,109 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Phase 9 – Step 9.1 (fix #7) + Step 9.1c (fix #9): build/deploy only when something that goes
+  # into the image changed. The workflow_run trigger cannot be path-filtered, so this job is the
+  # only gate: without it every merge — even docs-only — redeployed, ending open review sessions
+  # and wiping Cloud Run's temporary audit log and SAR files.
+  changes:
+    name: Did the image inputs change?
+    # after CI: only when CI passed (nothing would deploy otherwise)
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write   # keyless login, used only on the after-CI path to read the live revision
+    outputs:
+      image: ${{ steps.diff.outputs.image }}
+    steps:
+      - name: Check out the history (the exact commit CI tested, when triggered by CI)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      # Phase 9 – Step 9.1c: the three cloud steps may fail without failing the run —
+      # no live SHA means "deploy" (fail open). Same identity as the deploy job (run.admin).
+      - id: auth
+        name: Authenticate to Google Cloud (after-CI path only)
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
+        uses: google-github-actions/setup-gcloud@v2
+
+      - id: live
+        name: Read the commit SHA of the live Cloud Run revision
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+        run: |
+          REV="$(gcloud run services describe "$SERVICE" --region "$REGION" \
+                   --format='value(status.latestReadyRevisionName)')" || exit 0
+          [ -n "$REV" ] || { echo "no ready revision"; exit 0; }
+          IMAGE="$(gcloud run revisions describe "$REV" --region "$REGION" \
+                     --format='value(spec.containers[0].image)')" || exit 0
+          echo "live revision $REV runs $IMAGE"
+          echo "sha=${IMAGE##*:}" >> "$GITHUB_OUTPUT"
+
+      # Phase 9 – Step 9.1c: one decision for every trigger
+      - id: diff
+        name: Compare the image inputs with the live (or base) version
+        env:
+          # The image inputs: every Dockerfile COPY source + requirements.txt + this workflow.
+          # The only copy of this list; keep it in sync with the CD bullet in CLAUDE.md.
+          IMAGE_INPUTS_REGEX: '^Dockerfile$|^\.dockerignore$|^requirements\.txt$|^app/|^src/|^project_data/|^\.streamlit/|^\.github/workflows/cd\.yml$'
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          NEW_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          LIVE_SHA: ${{ steps.live.outputs.sha }}
+        run: |
+          # Fail open: whenever the comparison can't be trusted, deploy.
+          deploy() {
+            echo "image=true" >> "$GITHUB_OUTPUT"; echo "$1 - building"
+            echo "### Building: $1" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          }
+          skip() {
+            echo "image=false" >> "$GITHUB_OUTPUT"; echo "$1 - nothing to deploy"
+            echo "### Nothing to deploy: $1" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          }
+          case "$EVENT" in
+            pull_request) RANGE="${PR_BASE}...${PR_HEAD}"; LABEL="PR" ;;
+            workflow_run)
+              printf '%s' "$LIVE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+                || deploy "live version unknown ('${LIVE_SHA}')"
+              git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null \
+                || deploy "live commit ${LIVE_SHA} not in history"
+              [ "$LIVE_SHA" != "$NEW_SHA" ] || skip "commit ${NEW_SHA} is already live"
+              RANGE="${LIVE_SHA}..${NEW_SHA}"; LABEL="Live ${LIVE_SHA:0:7} -> new ${NEW_SHA:0:7}" ;;
+            *) deploy "event '$EVENT' always deploys" ;;
+          esac
+          CHANGED="$(git diff --name-only "$RANGE")" || deploy "cannot compute the diff"
+          [ -n "$CHANGED" ] || deploy "empty diff"
+          IMAGE_FILES="$(printf '%s\n' "$CHANGED" | grep -E "$IMAGE_INPUTS_REGEX" || true)"
+          if [ -n "$IMAGE_FILES" ]; then
+            echo "Image inputs changed:"; echo "$IMAGE_FILES"
+            deploy "${LABEL}: image inputs changed ($(printf '%s\n' "$IMAGE_FILES" | wc -l | tr -d ' ') files)"
+          fi
+          skip "${LABEL}: no image inputs changed"
+
   build:
     name: Build and smoke-test container
-    # After CI on main: only if CI passed. PRs and manual runs: always.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    needs: changes
+    # Only when the image inputs changed (fix #7 / #9), and after CI on main only if CI passed.
+    if: >-
+      needs.changes.outputs.image == 'true' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -90,6 +188,47 @@ jobs:
       # one image per commit: the tag says exactly which code is running (rollback = redeploy a tag)
       IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.AR_REPO }}/trace-sar:${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
+      # Phase 9 – Step 9.1 (fix #1): catch bad configuration here, not at the first user click.
+      # The first live run deployed a placeholder OPENAI_BASE_URL and every LLM call then failed.
+      - name: Validate deployment variables (fail fast on empty or placeholder values)
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          AR_REPO: ${{ vars.AR_REPO }}
+          CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+          WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+          DEPLOYER_SA: ${{ vars.DEPLOYER_SA }}
+          RUNTIME_SA: ${{ vars.RUNTIME_SA }}
+          KEY_SECRET: ${{ vars.KEY_SECRET }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          MODEL: ${{ vars.MODEL }}
+          PROMPT_VERSION: ${{ vars.PROMPT_VERSION }}
+          PASSCODE_SECRET: ${{ vars.PASSCODE_SECRET }}   # optional; checked only when set
+        run: |
+          errors=0
+          fail() { echo "::error::$1"; errors=1; }
+          for name in GCP_PROJECT_ID GCP_REGION AR_REPO CLOUD_RUN_SERVICE WIF_PROVIDER \
+                      DEPLOYER_SA RUNTIME_SA KEY_SECRET OPENAI_BASE_URL MODEL PROMPT_VERSION; do
+            value="${!name}"
+            if [ -z "$value" ]; then
+              fail "repository variable $name is empty (runbook gcp_setup.md, block 8)"
+            elif printf '%s' "$value" | grep -q "[<>\"']"; then
+              fail "repository variable $name contains placeholder or quote characters"
+            fi
+          done
+          if [ -n "$PASSCODE_SECRET" ] && printf '%s' "$PASSCODE_SECRET" | grep -q "[<>\"']"; then
+            fail "repository variable PASSCODE_SECRET contains placeholder or quote characters"
+          fi
+          case "$OPENAI_BASE_URL" in
+            https://*) ;;
+            *) fail "OPENAI_BASE_URL must start with https://" ;;
+          esac
+          if ! printf '%s' "$PROMPT_VERSION" | grep -Eq '^V[0-9]+$'; then
+            fail "PROMPT_VERSION must look like V1, V2, ... (it names src/prompts/*_<version>.md)"
+          fi
+          if [ "$errors" -ne 0 ]; then exit 1; fi
+          echo "All deployment variables look valid."
+
       - name: Check out the code CI tested
         uses: actions/checkout@v4
         with:

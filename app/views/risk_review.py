@@ -76,7 +76,7 @@ st.caption(f"{len(rows)} transactions · highlighted rows are quoted in the find
 st.subheader("Decision")
 with st.form("risk_decision_form"):
     choice = st.radio("Decision", ["approve", "reject"], horizontal=True, key="risk_choice")
-    reason = st.text_area("Reason (required to reject)", key="risk_reason")
+    reason = st.text_area("Reason (required, at least 10 characters)", key="risk_reason")
     submitted = st.form_submit_button("Submit risk decision", type="primary", key="risk_submit")
 if submitted and record_decision("risk", case_id, choice, reason):
     st.rerun()

@@ -237,8 +237,10 @@ def test_stage_stats_from_missing_run():
 # Phase 4 – Step 4.3: human decision gates and reviewer policies
 # ===========================================================================
 # Phase 5 – Step 5.1: default reviewers differ per gate (segregation of duties)
+# Phase 9 – Step 9.2: every decision needs a reason; default one when a test doesn't care
 def _decision(gate, decision="approve", reason=None, reviewer=None):
     reviewer = reviewer or ("analyst_1" if gate == "risk" else "officer_1")
+    reason = reason or f"{decision}: reviewed the evidence for this case"
     return HumanDecision(gate=gate, decision=decision, reviewer_id=reviewer, reason=reason)
 
 
@@ -280,6 +282,15 @@ def test_risk_gate_reject(at_risk_gate, audit):
     assert compliance.calls == 0
 
 
+# Phase 9 – Step 9.2: approvals are audited WITH their reason (fix #5)
+def test_risk_gate_approval_reason_audited(at_risk_gate, audit):
+    wf, _, cid = at_risk_gate
+    wf.record_risk_decision(cid, _decision("risk", reason="three deposits just under $10,000"))
+    [event] = _records(audit[1])
+    assert event["decision"] == "approve"
+    assert event["reasoning"] == "three deposits just under $10,000"
+
+
 # Phase 4 – Step 4.3: wrong gate, wrong time, or deciding twice → error, nothing changes
 def test_gate_guards(at_risk_gate, audit):
     wf, _, cid = at_risk_gate
@@ -302,7 +313,7 @@ def test_segregation_of_duties(at_risk_gate, audit, same_id, decision):
     wf.record_risk_decision(cid, _decision("risk", reviewer="analyst_1"))
     wf.run_compliance(cid)
     events_before = len(_records(audit[1]))
-    reason = "unclear" if decision == "reject" else None
+    reason = "facts are unclear" if decision == "reject" else None
     with pytest.raises(WorkflowError, match="segregation of duties"):
         wf.record_compliance_decision(cid, _decision("compliance", decision, reason, same_id))
     rec = wf.get(cid)
@@ -403,7 +414,12 @@ def test_scripted_reviewer_answers(at_risk_gate):
     assert (d.decision, d.reason, d.reviewer_id) == (
         "reject", "known customer", "scripted_reviewer"
     )
-    assert ScriptedReviewer().review(wf.get(cid), "risk").decision == "approve"  # High
+    approved = ScriptedReviewer().review(wf.get(cid), "risk")  # High → approve
+    assert approved.decision == "approve"
+    # Phase 9 – Step 9.2: the scripted policy always states its reason
+    assert approved.reason == "Scripted policy: risk level High – escalate for narrative."
+    no_reason = ScriptedReviewer(answers={(cid, "risk"): ("approve", None)})
+    assert no_reason.review(wf.get(cid), "risk").reason.startswith("Scripted policy")
 
 
 # Phase 4 – Step 4.3: the console reviewer re-asks until answers are valid
@@ -419,8 +435,12 @@ def test_console_reviewer(at_risk_gate):
     assert (d.decision, d.reason, d.reviewer_id) == ("reject", "insufficient evidence", "me")
     assert any("RISK GATE" in p for p in printed)
     assert any("Please type" in p for p in printed)
-    approve = ConsoleReviewer("me", input_fn=lambda _prompt: "a", print_fn=lambda *a: None)
-    assert approve.review(wf.get(cid), "risk").decision == "approve"
+    # Phase 9 – Step 9.2: an approval also asks for a reason, re-asking while it is too short
+    answers2 = iter(["a", "ok", "evidence is specific and dated"])
+    approve = ConsoleReviewer("me", input_fn=lambda _prompt: next(answers2),
+                              print_fn=lambda *a: None)
+    d2 = approve.review(wf.get(cid), "risk")
+    assert (d2.decision, d2.reason) == ("approve", "evidence is specific and dated")
 
 
 # ===========================================================================

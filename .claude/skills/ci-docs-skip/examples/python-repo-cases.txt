@@ -1,0 +1,25 @@
+# Example cases for a Python repo with regex '^plan/|^notebooks/|^[^/]+\.md$|^[^/]+\.png$'
+# expected|changed files (comma-separated)
+false|plan/09-walkthrough-fixes/plan.md
+false|plan/x.md,project_status.md
+false|CLAUDE.md,project_goal.md,project_system_arch.png
+false|notebooks/01_data_exploration.ipynb
+# runtime markdown (prompts) is code
+true|src/prompts/risk_analyst_V2.md
+true|tests/test_x.py
+true|CLAUDE.md,app/state.py
+true|.github/workflows/ci.yml
+true|pyproject.toml
+true|project_data/customers.csv
+# a folder that merely starts with "plan" is not plan/
+true|planner/main.py
+# images: only root-level ones are docs; app/static/*.png ships in the image
+true|app/static/logo.png
+# look-alikes and non-root docs (from ci-scope-auditor)
+true|planning/readme.md
+true|notebooks_old/a.py
+true|docs/README.md
+true|src/foo.py,plan/x.md
+# the dot must be literal: a root file merely ending in "md" is code
+true|cmd
+true|buildmd

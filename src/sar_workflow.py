@@ -34,6 +34,7 @@ from src import config
 from src.case_formatter import format_case_for_llm
 from src.compliance_officer_agent import ComplianceError
 from src.foundation_sar import (
+    MIN_REASON_LENGTH,
     CaseData,
     ComplianceOfficerOutput,
     ExplainabilityLogger,
@@ -337,7 +338,7 @@ class SARWorkflow:
             case_id=record.case_id,
             input_data=reviewed,
             output_data={"decision": decision.decision, "new_status": str(record.status)},
-            reasoning=decision.reason or f"Approved by {decision.reviewer_id}",
+            reasoning=decision.reason,  # Phase 9 – Step 9.2: always present, approvals included
             execution_time_ms=0.0,
             reviewer_id=decision.reviewer_id,
             decision=decision.decision,
@@ -402,6 +403,13 @@ class Reviewer(Protocol):
 
 
 LOW_RISK_REASON = "Low risk: activity is consistent with the customer profile; no SAR warranted."
+# Phase 9 – Step 9.2: approvals need a reason too; the scripted policy states its own rule
+COMPLIANCE_APPROVE_REASON = "Scripted policy: narrative passed all automated checks."
+
+
+# Phase 9 – Step 9.2: the scripted policy's reason for escalating a finding
+def _risk_approve_reason(record: CaseRecord) -> str:
+    return f"Scripted policy: risk level {record.risk_output.risk_level} – escalate for narrative."
 
 
 # Phase 4 – Step 4.3: deterministic reviewer for tests and demos
@@ -409,7 +417,8 @@ class ScriptedReviewer:
     """Default policy: reject `Low` at the risk gate (Stage 04 decision 4), approve everything else.
 
     `answers` overrides the policy per case and gate:
-    `{(case_id, "risk"): ("reject", "false positive"), ...}`.
+    `{(case_id, "risk"): ("reject", "false positive"), ...}`. An approval given without a reason
+    gets the policy reason (Phase 9 – Step 9.2: every decision carries a reason).
     """
 
     def __init__(
@@ -428,6 +437,8 @@ class ScriptedReviewer:
             decision, reason = "reject", LOW_RISK_REASON
         else:
             decision, reason = "approve", None
+        if decision == "approve" and not reason:
+            reason = _risk_approve_reason(record) if gate == "risk" else COMPLIANCE_APPROVE_REASON
         return HumanDecision(
             gate=gate, decision=decision, reviewer_id=self.reviewer_id, reason=reason
         )
@@ -460,16 +471,21 @@ class ConsoleReviewer:
                        f"{'; '.join(out.regulatory_citations)}")
         while True:
             answer = self.input("Approve or reject? [a/r]: ").strip().lower()
-            if answer in ("a", "approve"):
-                return HumanDecision(gate=gate, decision="approve", reviewer_id=self.reviewer_id)
-            if answer in ("r", "reject"):
-                reason = ""
-                while not reason:
-                    reason = self.input("Reason for rejection: ").strip()
-                return HumanDecision(
-                    gate=gate, decision="reject", reviewer_id=self.reviewer_id, reason=reason
-                )
-            self.print("Please type 'a' or 'r'.")
+            choice = {"a": "approve", "approve": "approve", "r": "reject", "reject": "reject"}.get(
+                answer
+            )
+            if choice is None:
+                self.print("Please type 'a' or 'r'.")
+                continue
+            # Phase 9 – Step 9.2: a reason for both choices, long enough to mean something
+            reason = ""
+            while len(reason) < MIN_REASON_LENGTH:
+                reason = self.input(
+                    f"Reason for {choice} (at least {MIN_REASON_LENGTH} characters): "
+                ).strip()
+            return HumanDecision(
+                gate=gate, decision=choice, reviewer_id=self.reviewer_id, reason=reason
+            )
 
 
 # ---------------------------------------------------------------------------

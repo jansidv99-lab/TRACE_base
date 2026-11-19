@@ -26,6 +26,9 @@ logs/
 *.jsonl
 outputs/
 
+# Git Bash crash dumps (Stage 09 fix #3)
+*.stackdump
+
 # Editors / OS
 .vscode/
 .idea/

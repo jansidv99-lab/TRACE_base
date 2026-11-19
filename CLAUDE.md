@@ -121,9 +121,21 @@ the agent raises `ComplianceError`, and Stage 04 sends that case to manual revie
 ### CI/CD (Stage 06)
 
 - **CI** (`.github/workflows/ci.yml`): `ruff check .` + `pytest` on every PR and push to `main`, on
-  Linux, with no secrets (`llm` tests skip themselves).
-- **CD** (`.github/workflows/cd.yml`): on PRs that touch the image inputs it only builds and
-  smoke-tests the container (`/_stcore/health`, no `.env` inside). After CI succeeds on `main` it
+  Linux, with no secrets (`llm` tests skip themselves). A first `changes` job skips lint/test when
+  every changed file is docs-only — `^plan/|^notebooks/|^\.claude/|^[^/]+\.md$|^[^/]+\.png$` (root-level `*.md`
+  only; `src/prompts/*.md` are code). The job name stays "Lint and test (Python 3.11)" so a
+  required check still matches. Pattern: the `ci-docs-skip` skill (`.claude/skills/`) and the
+  read-only `ci-scope-auditor` subagent (`.claude/agents/`), which proposes the docs-only list;
+  identical copies live in `~/.claude/` for other projects. For skills the `~/.claude` copy wins,
+  for subagents the repo copy wins, so edit **both** copies together.
+- **CD** (`.github/workflows/cd.yml`): one `changes` job decides for every trigger (no `paths:`
+  filter; the only list is `IMAGE_INPUTS_REGEX` =
+  `^Dockerfile$|^\.dockerignore$|^requirements\.txt$|^app/|^src/|^project_data/|^\.streamlit/|^\.github/workflows/cd\.yml$`).
+  On PRs it compares the PR's changes; after CI on `main` it compares the commit **live on Cloud
+  Run** (image tag) with the new one, so a failed deploy is retried by the next merge. If the live
+  SHA can't be read, it deploys (fail open); manual runs always deploy. Pattern: `cd-deploy-skip`
+  skill + `cd-scope-auditor` subagent. When it builds: PRs only build and
+  smoke-test the container (`/_stcore/health`, no `.env` inside). After CI succeeds on `main` it
   also pushes the image to Artifact Registry (tag = commit SHA) and runs `gcloud run deploy`
   (public URL, max 1 instance). Login is keyless (Workload Identity Federation, `main` branch of this
   repo only); the API key and optional `APP_PASSCODE` come from Secret Manager; all names are GitHub
@@ -147,3 +159,26 @@ heading; the real Phase 3 deliverables are under "Phase 3 Deliverables: Complian
 
 ## Project status
 @project_status.md
+
+## skills and subagents
+You: "CI shouldn't run on docs changes"
+          │
+          ▼
+  Main session loads skill  ci-docs-skip   ← the HOW (procedure, template, tests)
+          │  step 1: "delegate to ci-scope-auditor"
+          ▼
+  Subagent ci-scope-auditor (own context)  ← the WHAT for this repo (evidence → pattern)
+          │  returns a report
+          ▼
+  Main session: review → you approve → edit ci.yml → run test_docs_only.sh → commit
+
+You: "CD shouldn't redeploy when the image didn't change"
+          │
+          ▼
+  Main session loads skill  cd-deploy-skip ← the HOW (allow list, live-SHA diff, template, tests)
+          │  step 1: "delegate to cd-scope-auditor"
+          ▼
+  Subagent cd-scope-auditor (own context)  ← the WHAT (Dockerfile COPY sources → IMAGE_INPUTS_REGEX)
+          │  returns a report
+          ▼
+  Main session: review → you approve → edit cd.yml → run test_inputs_changed.sh → commit
